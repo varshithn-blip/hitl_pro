@@ -1,0 +1,137 @@
+# Document Review Portal
+
+A single-screen HITL (human-in-the-loop) review portal that replaces the
+three-tab workflow (master sheet + Drive image + per-transaction OCR
+sheet) reviewers currently use. One screen: document image on the left,
+editable OCR fields and the accept/reject decision on the right.
+
+Read `/root/.claude/plans/we-have-a-team-fancy-whisper.md` (or ask for a
+copy) for the full discovery notes this was built from — the master
+sheet / OCR sheet structure, the taxonomy, and every locked decision and
+open question. This README covers running and setting the app up.
+
+## Running it
+
+```bash
+npm install
+npm run dev
+```
+
+By default the app runs in **demo mode** against synthetic sample data —
+no Google account or setup needed. It exercises the same doc-type
+schemas as the real sheets (loan, payslip, credit card, and the
+Certificate-of-Employment repeating "Salary Components" table), so the
+UI, filters, per-doc-type OCR forms, and the full submit flow are all
+real and clickable — only the data source is fake.
+
+### Live mode (against the real Google Sheets)
+
+1. In Google Cloud Console, create (or reuse) a project, enable the
+   **Google Sheets API** and **Google Drive API**, and create an **OAuth
+   2.0 Client ID** (Application type: Web application). Add wherever
+   you'll serve this app from (e.g. `http://localhost:5173` for local
+   dev) under Authorized JavaScript origins.
+2. Share the master sheet with each reviewer's actual Google account as
+   an **Editor** — not "anyone with the link" (that was deliberately
+   ruled out for the master sheet; the OCR sheets are fine as-is, they're
+   already "anyone with the link → Editor"). A reviewer must sign into
+   the portal with the same Google account that was added here.
+3. Copy `.env.example` to `.env.local` and fill in `VITE_GOOGLE_CLIENT_ID`
+   and `VITE_MASTER_SHEET_ID`.
+4. `npm run dev` — you'll get a real "Sign in with Google" screen instead
+   of demo mode.
+
+## What it does
+
+- **Filters** — Date (maps to the master sheet's date-named tab),
+  Reviewer, Status, and API Called (a 3-state filter: any / done only /
+  not done — not a plain distinct-values dropdown, per the confirmed
+  spec).
+- **Queue** — the filtered rows, click one to open it.
+- **Document view** — the Drive image (pan/zoom/rotate), with a
+  prev/next switcher when a transaction has more than one document (the
+  `loan_0`/`loan_1` case).
+- **OCR editor** — parsed directly from the transaction's OCR tab, so it
+  adapts to whatever fields and sections that document type actually
+  has, including a repeating table (Certificate of Employment's "Salary
+  Components"). Field-level remarks the OCR pipeline itself attaches
+  (the sheet's optional 3rd column) surface as inline warning badges.
+- **Decision panel** — Category (Valid / Invalid / Incomplete), Rejection
+  Reason (a flat list per document type — payslip/credit/loan/coe each
+  have their own), Fraud Reason (multi-select, independent of Category —
+  confirmed it can apply regardless of Valid/Invalid/Incomplete),
+  Reclassify document type, and free-text notes. Submit writes the OCR
+  corrections and the decision back — in demo mode to local state, in
+  live mode as two Sheets API batch writes (OCR tab, then the master
+  row) — then advances to the next queued document.
+- **Dropdown sources** — Category / Rejection Reason / Fraud Reason /
+  Reclassify options are read from the master sheet's own data-validation
+  rules at runtime (`lib/masterSheet.ts` → `readLiveTaxonomy`), so the
+  taxonomy can be changed later without redeploying the app, per the
+  explicit request. `lib/taxonomy.ts`'s `FALLBACK_TAXONOMY` (the exact
+  lists provided during discovery) is only a fallback for when a rule
+  can't be read.
+
+## Known gaps — unverified against the live Google APIs
+
+This was built without a live Google Cloud OAuth client or a browser
+session authenticated against the real sheets, so the pieces below are
+implemented per the Sheets API v4 contract but **haven't been exercised
+against the real spreadsheets yet**. Treat live mode as needing a
+verification pass, not as proven:
+
+- **Resolving `Image URL` / `Drive Link` / `Sheet URL`.** These render as
+  link-chip text in the sheet, not visible URLs. `sheetsApi.getGridData`
+  reads the `hyperlink` field off each cell, which is the documented way
+  to get a rich-text link's target — needs confirming against the real
+  cells (in particular, if these were inserted as Drive "smart chips"
+  rather than a plain link, the value may live somewhere else in the
+  cell's `chipRuns` data instead).
+- **Data-validation reads** (`readLiveTaxonomy`) — assumes a
+  `ONE_OF_LIST` condition type; untested against what's actually
+  configured on the sheet's Category/Rejection Reason/Fraud
+  Reason/Re-classified columns.
+- **The OCR-tab parser** (`lib/ocrParser.ts`) was verified against
+  fixture text pulled directly from the real sheets during discovery
+  (`npm run verify:parser` re-runs this check against `lib/mockData.ts`),
+  but not against a live API read — Sheets' row-truncation behavior
+  (trailing empty cells dropped) is assumed to match what was observed
+  through the Drive content-reading tool used for discovery.
+- **Newly-added Salary-Components-style table rows aren't written back
+  yet.** "Add row" is fully functional in the UI (and included in what a
+  submit tries to save), but only edits to *existing* sheet rows
+  currently generate a write — a genuinely new row needs
+  `values.append`-style insertion, which isn't wired up. Removing a row
+  added this session works locally; there's no delete-row support for
+  rows that already exist in the sheet.
+- **`Category` → `Status` mapping is an inference, not confirmed.** The
+  sheet has 3 Category values but only 2 Status values, so this maps
+  Valid → Manually Approved and {Invalid, Incomplete} → Manually
+  Rejected (`lib/taxonomy.ts` → `statusForCategory`). Worth a quick
+  confirm once this is in front of a reviewer.
+- **Auth** uses Google Identity Services' implicit token-client flow —
+  no refresh token, so a session needs re-auth after the access token
+  expires (~1 hour). Fine for a first pass; a longer-lived session would
+  need the authorization-code flow instead (needs a backend to exchange
+  the code, which the current no-backend architecture deliberately
+  avoids — worth a conscious tradeoff decision if this becomes a problem
+  in practice).
+
+## Project structure
+
+```
+src/
+  lib/
+    types.ts          domain types (MasterRow, OcrDocument, Taxonomy, ...)
+    config.ts          env var / demo-mode resolution
+    googleAuth.ts       Google Identity Services sign-in wrapper
+    sheetsApi.ts        thin Sheets API v4 fetch wrapper
+    masterSheet.ts       master-sheet row parsing + write-back + live taxonomy read
+    ocrParser.ts          generic OCR-tab section parser (see comments — this is the trickiest part)
+    taxonomy.ts            fallback taxonomy + live/fallback merge + Category→Status mapping
+    presentation.ts          purely cosmetic helpers (badge colors, avatar initials)
+    mockData.ts               demo-mode fixtures (also the parser's test fixtures)
+  hooks/usePortal.ts    all app state + data-loading + submit logic
+  components/            presentational React components
+scripts/verify-parser.ts  sanity check for ocrParser.ts against mockData.ts fixtures
+```

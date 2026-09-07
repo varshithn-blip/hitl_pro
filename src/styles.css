@@ -1,0 +1,80 @@
+:root {
+  --bg-app: oklch(96.5% 0.004 255);
+  --bg-panel: oklch(99% 0.002 255);
+  --bg-subtle: oklch(98% 0.003 255);
+  --border: oklch(89% 0.006 255);
+  --border-strong: oklch(85% 0.008 255);
+
+  --text-primary: oklch(24% 0.015 255);
+  --text-secondary: oklch(46% 0.012 255);
+  --text-muted: oklch(58% 0.012 255);
+
+  --accent: oklch(52% 0.17 255);
+  --accent-hover: oklch(44% 0.17 255);
+  --accent-tint: oklch(94% 0.03 255);
+
+  --success: oklch(54% 0.14 150);
+  --success-tint: oklch(94% 0.045 150);
+  --danger: oklch(55% 0.19 25);
+  --danger-tint: oklch(94% 0.04 25);
+  --warning: oklch(50% 0.13 75);
+  --warning-tint: oklch(96% 0.04 85);
+
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-hover);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+::placeholder {
+  color: var(--text-muted);
+}
+
+.rd-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.rd-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.rd-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+}
