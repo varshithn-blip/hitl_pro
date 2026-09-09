@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { avatarColor, docTypeBadge, reviewerInitials, statusDotColor } from '../lib/presentation'
 import type { MasterRow } from '../lib/types'
+import { ChevronLeft, ChevronRight } from './icons'
 
 interface Props {
   rows: MasterRow[]
@@ -7,11 +9,77 @@ interface Props {
   onSelect: (requestId: string) => void
 }
 
+const EXPANDED_WIDTH = 272
+const COLLAPSED_WIDTH = 44
+
 export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
+  const [collapsed, setCollapsed] = useState(false)
+  const pendingCount = rows.filter((r) => r.status === '').length
+
+  if (collapsed) {
+    return (
+      <div
+        style={{
+          width: COLLAPSED_WIDTH,
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 12,
+          padding: '13px 0',
+          background: 'var(--bg-panel)',
+          borderRight: '1px solid var(--border)',
+        }}
+      >
+        <button
+          onClick={() => setCollapsed(false)}
+          title="Expand queue"
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 6,
+            border: 'none',
+            background: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-primary)',
+          }}
+        >
+          <ChevronRight size={14} />
+        </button>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: pendingCount > 0 ? 'var(--accent)' : 'var(--text-muted)',
+            background: pendingCount > 0 ? 'var(--accent-tint)' : 'oklch(93% 0.006 255)',
+            padding: '2px 7px',
+            borderRadius: 20,
+          }}
+        >
+          {rows.length}
+        </span>
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 600,
+            color: 'var(--text-secondary)',
+            letterSpacing: '0.06em',
+            writingMode: 'vertical-rl',
+            transform: 'rotate(180deg)',
+          }}
+        >
+          QUEUE
+        </span>
+      </div>
+    )
+  }
+
   return (
     <div
       style={{
-        width: 272,
+        width: EXPANDED_WIDTH,
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
@@ -28,19 +96,38 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <span style={{ fontSize: 12.5, fontWeight: 600 }}>Queue</span>
-        <span
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Queue</span>
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: 'var(--accent)',
+              background: 'var(--accent-tint)',
+              padding: '2px 8px',
+              borderRadius: 20,
+            }}
+          >
+            {rows.length}
+          </span>
+        </div>
+        <button
+          onClick={() => setCollapsed(true)}
+          title="Collapse queue — more room for the document viewer"
           style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: 'var(--accent)',
-            background: 'var(--accent-tint)',
-            padding: '2px 8px',
-            borderRadius: 20,
+            width: 24,
+            height: 24,
+            borderRadius: 6,
+            border: 'none',
+            background: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--text-muted)',
           }}
         >
-          {rows.length}
-        </span>
+          <ChevronLeft size={14} />
+        </button>
       </div>
 
       <div className="rd-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
