@@ -197,14 +197,17 @@ export function usePortal() {
   }, [selectedRow?.requestId, user])
 
   // --- Resolve the document image -----------------------------------------
-  // The sheet's "Image URL" cell resolves to a Drive *view* link (opens fine
-  // as a normal navigation — that's what the "Open in Drive" link uses) but
-  // can't be embedded directly in an <img src>, since that URL serves an
-  // HTML viewer page, not raw image bytes. So for the inline preview we
-  // pull the file id out of that link and fetch the actual bytes through
-  // the Drive API with the reviewer's own token, then hand the browser a
-  // blob: URL. Demo mode never has a real link here, so this is a no-op
-  // there (ImageViewer's placeholder covers it).
+  // The actual document file lives behind the "Drive Link" column, not
+  // "Image URL" (confirmed by the user — Image URL isn't the one to use
+  // here, whatever it's actually for). Drive Link resolves to a Drive
+  // *view* link — opens fine as a normal navigation, which is what the
+  // "Open in Drive" button uses directly — but that URL serves an HTML
+  // viewer page, not raw image bytes, so it can't be dropped straight into
+  // an <img src>. For the inline preview we pull the file id out of that
+  // same link and fetch the actual bytes through the Drive API with the
+  // reviewer's own token, then hand the browser a blob: URL. Demo mode
+  // never has a real link here, so this is a no-op there (ImageViewer's
+  // placeholder covers it).
   useEffect(() => {
     setImagePreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev)
@@ -214,9 +217,9 @@ export function usePortal() {
 
     if (DEMO_MODE || !user || !selectedRow) return
 
-    const fileId = extractDriveFileId(selectedRow.imageUrl.href)
+    const fileId = extractDriveFileId(selectedRow.driveLink.href)
     if (!fileId) {
-      setImageLoadError('Could not find a Drive file id in the Image URL link for this row.')
+      setImageLoadError('Could not find a Drive file id in the Drive Link for this row.')
       return
     }
 

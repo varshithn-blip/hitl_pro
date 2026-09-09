@@ -83,10 +83,13 @@ verification pass, not as proven:
 - ~~Resolving `Image URL` / `Drive Link` / `Sheet URL`~~ — **confirmed
   working** against the live sheet: `sheetsApi.getGridData`'s `hyperlink`
   field read does resolve these link chips correctly.
-  One follow-on issue found and fixed: the resolved `Image URL` link is a
-  Drive *view* link (an HTML viewer page — fine for the "Open in Drive"
-  navigation, which is a plain `<a href>`), not a raw-image URL, so it
-  can't be dropped directly into an `<img src>`. `lib/driveApi.ts` now
+  One correction and one follow-on issue found: the document image is
+  resolved from **`Drive Link`, not `Image URL`** — the two columns aren't
+  interchangeable (per the user; what `Image URL` is actually for is still
+  an open question). And the resolved Drive Link is a Drive *view* link
+  (an HTML viewer page — fine for the "Open in Drive" navigation, which is
+  a plain `<a href>`), not a raw-image URL, so it can't be dropped
+  directly into an `<img src>`. `lib/driveApi.ts` now
   fetches the file's actual bytes through the Drive API (with the
   reviewer's own token) and hands the browser a `blob:` URL instead — see
   its comments for the full reasoning. Still worth watching for: this

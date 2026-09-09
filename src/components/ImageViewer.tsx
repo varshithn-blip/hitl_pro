@@ -8,10 +8,10 @@ interface Props {
   row: MasterRow
   siblingDocs: MasterRow[]
   onSelectSibling: (requestId: string) => void
-  /** Object URL for the fetched image bytes (real mode only — see
-   * usePortal's image-resolution effect for why this can't just be
-   * `row.imageUrl.href` rendered directly). Null while loading, absent, or
-   * in demo mode. */
+  /** Object URL for the fetched image bytes (real mode only, resolved from
+   * `row.driveLink.href` — see usePortal's image-resolution effect for
+   * why this can't just be rendered as an `<img src>` directly). Null
+   * while loading, absent, or in demo mode. */
   imagePreviewUrl: string | null
   imageLoadError: string | null
 }
