@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CONFIG, DEMO_MODE } from '../lib/config'
+import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, readLiveTaxonomy, parseMasterRows, parseSheetUrlHref } from '../lib/masterSheet'
@@ -49,6 +50,9 @@ export function usePortal() {
   const [draftSections, setDraftSections] = useState<OcrSection[] | null>(null)
   const [decisionDraft, setDecisionDraft] = useState<DecisionDraft>(EMPTY_DRAFT)
   const [loadingDoc, setLoadingDoc] = useState(false)
+
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
+  const [imageLoadError, setImageLoadError] = useState<string | null>(null)
 
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncMessage, setSyncMessage] = useState<string | undefined>()
@@ -192,6 +196,52 @@ export function usePortal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRow?.requestId, user])
 
+  // --- Resolve the document image -----------------------------------------
+  // The sheet's "Image URL" cell resolves to a Drive *view* link (opens fine
+  // as a normal navigation — that's what the "Open in Drive" link uses) but
+  // can't be embedded directly in an <img src>, since that URL serves an
+  // HTML viewer page, not raw image bytes. So for the inline preview we
+  // pull the file id out of that link and fetch the actual bytes through
+  // the Drive API with the reviewer's own token, then hand the browser a
+  // blob: URL. Demo mode never has a real link here, so this is a no-op
+  // there (ImageViewer's placeholder covers it).
+  useEffect(() => {
+    setImagePreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev)
+      return null
+    })
+    setImageLoadError(null)
+
+    if (DEMO_MODE || !user || !selectedRow) return
+
+    const fileId = extractDriveFileId(selectedRow.imageUrl.href)
+    if (!fileId) {
+      setImageLoadError('Could not find a Drive file id in the Image URL link for this row.')
+      return
+    }
+
+    let cancelled = false
+    let objectUrl: string | null = null
+    ;(async () => {
+      try {
+        const url = await fetchDriveFileObjectUrl(fileId, user.accessToken)
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+        } else {
+          objectUrl = url
+          setImagePreviewUrl(url)
+        }
+      } catch (err) {
+        if (!cancelled) setImageLoadError(err instanceof Error ? err.message : 'Failed to load the document image')
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [selectedRow?.requestId, user])
+
   // --- OCR field/table edit handlers ------------------------------------
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {
     setDraftSections((prev) => {
@@ -328,6 +378,8 @@ export function usePortal() {
     currentDoc,
     draftSections,
     loadingDoc,
+    imagePreviewUrl,
+    imageLoadError,
     decisionDraft,
     setDecisionDraft,
     editField,

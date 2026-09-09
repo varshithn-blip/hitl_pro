@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { DEMO_MODE } from '../lib/config'
 import { docTypeBadge } from '../lib/presentation'
 import type { MasterRow } from '../lib/types'
 import { ChevronLeft, ChevronRight, ExternalLink, Maximize, Rotate, ZoomIn, ZoomOut } from './icons'
@@ -7,13 +8,19 @@ interface Props {
   row: MasterRow
   siblingDocs: MasterRow[]
   onSelectSibling: (requestId: string) => void
+  /** Object URL for the fetched image bytes (real mode only — see
+   * usePortal's image-resolution effect for why this can't just be
+   * `row.imageUrl.href` rendered directly). Null while loading, absent, or
+   * in demo mode. */
+  imagePreviewUrl: string | null
+  imageLoadError: string | null
 }
 
 const ZOOM_STEP = 25
 const MIN_ZOOM = 50
 const MAX_ZOOM = 300
 
-export function ImageViewer({ row, siblingDocs, onSelectSibling }: Props) {
+export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl, imageLoadError }: Props) {
   const [zoom, setZoom] = useState(100)
   const [rotation, setRotation] = useState(0)
 
@@ -144,10 +151,10 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling }: Props) {
             transition: 'transform 120ms ease',
           }}
         >
-          {row.imageUrl.href ? (
-            <img src={row.imageUrl.href} alt="Document" style={{ maxWidth: 480, borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }} />
+          {imagePreviewUrl ? (
+            <img src={imagePreviewUrl} alt="Document" style={{ maxWidth: 480, borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }} />
           ) : (
-            <DocumentPlaceholder />
+            <DocumentPlaceholder error={imageLoadError} />
           )}
         </div>
 
@@ -200,7 +207,7 @@ function Divider() {
   return <div style={{ width: 1, height: 18, background: 'var(--border)', margin: '0 4px' }} />
 }
 
-function DocumentPlaceholder() {
+function DocumentPlaceholder({ error }: { error?: string | null }) {
   return (
     <div style={{ position: 'relative' }}>
       <div
@@ -210,11 +217,12 @@ function DocumentPlaceholder() {
           left: 0,
           fontSize: 10.5,
           fontWeight: 500,
-          color: 'var(--text-muted)',
-          whiteSpace: 'nowrap',
+          color: error ? 'var(--danger)' : 'var(--text-muted)',
+          whiteSpace: error ? 'normal' : 'nowrap',
+          width: error ? 380 : 'auto',
         }}
       >
-        Preview placeholder — image link not resolved
+        {error ?? (DEMO_MODE ? 'Preview placeholder — demo mode has no real images' : 'Loading image…')}
       </div>
       <div
         style={{

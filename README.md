@@ -80,13 +80,19 @@ implemented per the Sheets API v4 contract but **haven't been exercised
 against the real spreadsheets yet**. Treat live mode as needing a
 verification pass, not as proven:
 
-- **Resolving `Image URL` / `Drive Link` / `Sheet URL`.** These render as
-  link-chip text in the sheet, not visible URLs. `sheetsApi.getGridData`
-  reads the `hyperlink` field off each cell, which is the documented way
-  to get a rich-text link's target — needs confirming against the real
-  cells (in particular, if these were inserted as Drive "smart chips"
-  rather than a plain link, the value may live somewhere else in the
-  cell's `chipRuns` data instead).
+- ~~Resolving `Image URL` / `Drive Link` / `Sheet URL`~~ — **confirmed
+  working** against the live sheet: `sheetsApi.getGridData`'s `hyperlink`
+  field read does resolve these link chips correctly.
+  One follow-on issue found and fixed: the resolved `Image URL` link is a
+  Drive *view* link (an HTML viewer page — fine for the "Open in Drive"
+  navigation, which is a plain `<a href>`), not a raw-image URL, so it
+  can't be dropped directly into an `<img src>`. `lib/driveApi.ts` now
+  fetches the file's actual bytes through the Drive API (with the
+  reviewer's own token) and hands the browser a `blob:` URL instead — see
+  its comments for the full reasoning. Still worth watching for: this
+  will surface a 403 if a reviewer's account can see the *sheet* but not
+  the underlying *image file* in Drive (they're separate permissions) —
+  `imageLoadError` in the UI will say so explicitly if that happens.
 - **Data-validation reads** (`readLiveTaxonomy`) — assumes a
   `ONE_OF_LIST` condition type; untested against what's actually
   configured on the sheet's Category/Rejection Reason/Fraud
