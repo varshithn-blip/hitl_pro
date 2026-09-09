@@ -60,6 +60,7 @@ export default function App() {
                   siblingDocs={p.siblingDocs}
                   onSelectSibling={p.setSelectedRequestId}
                   imagePreviewUrl={p.imagePreviewUrl}
+                  imagePreviewType={p.imagePreviewType}
                   imageLoadError={p.imageLoadError}
                 />
 

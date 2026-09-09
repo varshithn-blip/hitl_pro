@@ -53,6 +53,7 @@ export function usePortal() {
   const [loadingDoc, setLoadingDoc] = useState(false)
 
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
+  const [imagePreviewType, setImagePreviewType] = useState<string | null>(null)
   const [imageLoadError, setImageLoadError] = useState<string | null>(null)
 
   const [syncState, setSyncState] = useState<SyncState>('idle')
@@ -214,6 +215,7 @@ export function usePortal() {
       if (prev) URL.revokeObjectURL(prev)
       return null
     })
+    setImagePreviewType(null)
     setImageLoadError(null)
 
     if (DEMO_MODE || !user || !selectedRow) return
@@ -228,12 +230,13 @@ export function usePortal() {
     let objectUrl: string | null = null
     ;(async () => {
       try {
-        const url = await fetchDriveFileObjectUrl(fileId, user.accessToken)
+        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken)
         if (cancelled) {
-          URL.revokeObjectURL(url)
+          URL.revokeObjectURL(preview.url)
         } else {
-          objectUrl = url
-          setImagePreviewUrl(url)
+          objectUrl = preview.url
+          setImagePreviewUrl(preview.url)
+          setImagePreviewType(preview.mimeType)
         }
       } catch (err) {
         if (!cancelled) setImageLoadError(err instanceof Error ? err.message : 'Failed to load the document image')
@@ -385,6 +388,7 @@ export function usePortal() {
     draftSections,
     loadingDoc,
     imagePreviewUrl,
+    imagePreviewType,
     imageLoadError,
     decisionDraft,
     setDecisionDraft,

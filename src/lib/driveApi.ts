@@ -34,19 +34,35 @@ export class DriveApiError extends Error {
   }
 }
 
+export interface DriveFilePreview {
+  url: string
+  /** The file's real content type (e.g. "application/pdf", "image/jpeg") —
+   * a submitted document isn't always an image; loan/payslip/credit/coe
+   * uploads can just as easily be a scanned multi-page PDF, and a PDF
+   * can't be rendered in an <img> tag at all. Callers branch on this to
+   * pick <img> vs a PDF-capable viewer. */
+  mimeType: string
+}
+
 /** Fetches a Drive file's raw bytes and returns a `blob:` object URL for
- * it. Caller owns the URL's lifetime — call `URL.revokeObjectURL` on it
- * once it's no longer shown, or the blob stays pinned in memory for the
- * life of the tab. */
-export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string): Promise<string> {
+ * it (plus its content type, for picking how to render it). Caller owns
+ * the URL's lifetime — call `URL.revokeObjectURL` on it once it's no
+ * longer shown, or the blob stays pinned in memory for the life of the
+ * tab. */
+export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string): Promise<DriveFilePreview> {
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (!res.ok) {
     const status = res.status
     const hint = status === 403 || status === 404 ? ' — the signed-in account may not have access to this file.' : ''
-    throw new DriveApiError(`Failed to load the image from Drive (${status})${hint}`, status)
+    throw new DriveApiError(`Failed to load the document from Drive (${status})${hint}`, status)
   }
   const blob = await res.blob()
-  return URL.createObjectURL(blob)
+  const mimeType = blob.type || res.headers.get('content-type') || 'application/octet-stream'
+  return { url: URL.createObjectURL(blob), mimeType }
+}
+
+export function isPdfMimeType(mimeType: string | null): boolean {
+  return mimeType?.toLowerCase().includes('pdf') ?? false
 }

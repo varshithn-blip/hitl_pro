@@ -48,9 +48,15 @@ real and clickable — only the data source is fake.
   not done — not a plain distinct-values dropdown, per the confirmed
   spec).
 - **Queue** — the filtered rows, click one to open it.
-- **Document view** — the Drive image (pan/zoom/rotate), with a
-  prev/next switcher when a transaction has more than one document (the
-  `loan_0`/`loan_1` case).
+- **Document view** — image or PDF, detected from the file's real content
+  type (a submitted document is just as often a scanned multi-page PDF as
+  a single image). Images get custom pan/zoom (ctrl+wheel/pinch, or
+  click-drag — anchored under the cursor, full range in every direction);
+  PDFs render through the browser's own built-in PDF viewer via an
+  iframe, which already has multi-page scrolling, its own zoom, and text
+  search — no bundled PDF library needed. A prev/next switcher appears
+  when a transaction has more than one document (the `loan_0`/`loan_1`
+  case).
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary
@@ -80,6 +86,14 @@ implemented per the Sheets API v4 contract but **haven't been exercised
 against the real spreadsheets yet**. Treat live mode as needing a
 verification pass, not as proven:
 
+- **PDF rendering** — the mechanism (fetch bytes via the Drive API,
+  detect `application/pdf` from the response's content type, embed the
+  resulting blob URL in an `<iframe>`) is confirmed to work as a browser
+  capability — verified directly against a hand-built test PDF, which
+  correctly triggered Chromium's native PDF viewer chrome in an iframe,
+  independent of this app's own auth flow. Not yet exercised against a
+  *real* PDF coming out of the actual master sheet's Drive Link column,
+  so still worth a real check.
 - ~~Resolving `Image URL` / `Drive Link` / `Sheet URL`~~ — **confirmed
   working** against the live sheet: `sheetsApi.getGridData`'s `hyperlink`
   field read does resolve these link chips correctly.
