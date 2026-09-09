@@ -115,11 +115,35 @@ export async function batchUpdateValues(spreadsheetId: string, updates: CellUpda
  * (Sheets stores a ONE_OF_LIST condition with literal option strings).
  * Returns null when the column has no such rule so callers can fall back
  * to the hardcoded taxonomy instead of showing an empty dropdown. */
-export function extractValidationList(cells: GridCell[]): string[] | null {
+/** Parse the literal options for a `ONE_OF_LIST` validation rule (options
+ * typed directly into the rule), or resolve the referenced range's own
+ * cell values for a `ONE_OF_RANGE` rule (options pulled from a list
+ * living elsewhere in the spreadsheet — a very common way to back a
+ * large or shared dropdown, and the one this initially missed: it only
+ * handled ONE_OF_LIST, so a range-backed dropdown silently fell back to
+ * the hardcoded taxonomy every time). Returns null when the column has no
+ * recognized dropdown rule, so callers can fall back rather than show an
+ * empty dropdown. */
+export async function extractValidationList(cells: GridCell[], spreadsheetId: string, accessToken: string): Promise<string[] | null> {
   for (const cell of cells) {
-    const values = cell.dataValidation?.condition?.values
-    if (cell.dataValidation?.condition?.type === 'ONE_OF_LIST' && values?.length) {
-      return values.map((v) => v.userEnteredValue ?? '').filter(Boolean)
+    const condition = cell.dataValidation?.condition
+    if (!condition) continue
+
+    if (condition.type === 'ONE_OF_LIST' && condition.values?.length) {
+      const literal = condition.values.map((v) => v.userEnteredValue ?? '').filter(Boolean)
+      if (literal.length > 0) return literal
+    }
+
+    if (condition.type === 'ONE_OF_RANGE' && condition.values?.[0]?.userEnteredValue) {
+      const rangeRef = condition.values[0].userEnteredValue.replace(/^=/, '')
+      try {
+        const rangeValues = await getValues(spreadsheetId, rangeRef, accessToken)
+        const flat = rangeValues.flat().map((v) => v?.trim()).filter(Boolean)
+        if (flat.length > 0) return flat
+      } catch {
+        // The reference couldn't be resolved as-is — fall through so the
+        // caller uses its fallback list instead of showing an empty one.
+      }
     }
   }
   return null

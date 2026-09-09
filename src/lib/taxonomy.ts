@@ -165,11 +165,8 @@ export function mergeTaxonomy(live: LiveTaxonomyRead): Taxonomy {
   }
 }
 
-/** Category -> Status. Status only has 2 values in the sheet
- * ("Manually Approved" / "Manually Rejected") while Category has 3
- * ("Valid" / "Invalid" / "Incomplete"). This mapping is an INFERENCE, not
- * explicitly confirmed: Valid -> Approved, {Invalid, Incomplete} ->
- * Rejected. Flagged in the plan notes for a quick confirm. */
-export function statusForCategory(category: Taxonomy['category'][number]): 'Manually Approved' | 'Manually Rejected' {
-  return category === 'Valid' ? 'Manually Approved' : 'Manually Rejected'
-}
+// Category (Valid/Invalid/Incomplete) and Status (Approved/Rejected) used
+// to be coupled here via a derived mapping. Per explicit correction: they
+// are independent — a Valid document can still be Rejected for other
+// reasons, and neither is derived from the other. Both are now set
+// directly on DecisionDraft (see types.ts) with no auto-derivation.

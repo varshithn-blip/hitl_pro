@@ -96,10 +96,16 @@ verification pass, not as proven:
   will surface a 403 if a reviewer's account can see the *sheet* but not
   the underlying *image file* in Drive (they're separate permissions) —
   `imageLoadError` in the UI will say so explicitly if that happens.
-- **Data-validation reads** (`readLiveTaxonomy`) — assumes a
-  `ONE_OF_LIST` condition type; untested against what's actually
-  configured on the sheet's Category/Rejection Reason/Fraud
-  Reason/Re-classified columns.
+- **Data-validation reads** (`readLiveTaxonomy`) — the rejection-reason
+  dropdown initially came back incomplete against the live sheet, most
+  likely because the first pass only handled a `ONE_OF_LIST` condition
+  (options typed directly into the rule); `extractValidationList` now
+  also resolves `ONE_OF_RANGE` (options pulled from a range elsewhere in
+  the spreadsheet, a very common way to back a shared dropdown, and the
+  likely actual case here). Worth a re-check now that this is in — if the
+  dropdown is still short, the range this resolves to isn't the one
+  driving the visible dropdown, which would need eyes on the sheet's
+  actual validation rule to pin down further.
 - **The OCR-tab parser** (`lib/ocrParser.ts`) was verified against
   fixture text pulled directly from the real sheets during discovery
   (`npm run verify:parser` re-runs this check against `lib/mockData.ts`),
@@ -113,11 +119,12 @@ verification pass, not as proven:
   `values.append`-style insertion, which isn't wired up. Removing a row
   added this session works locally; there's no delete-row support for
   rows that already exist in the sheet.
-- **`Category` → `Status` mapping is an inference, not confirmed.** The
-  sheet has 3 Category values but only 2 Status values, so this maps
-  Valid → Manually Approved and {Invalid, Incomplete} → Manually
-  Rejected (`lib/taxonomy.ts` → `statusForCategory`). Worth a quick
-  confirm once this is in front of a reviewer.
+- ~~`Category` → `Status` mapping~~ — **resolved, and reversed**: they're
+  independent fields, each set directly by the reviewer (a "Document
+  category" control for Valid/Invalid/Incomplete, a separate "Decision"
+  control for Approve/Reject) — not one derived from the other. A Valid
+  document can still be Rejected. Rejection Reason is gated on
+  Decision=Reject, not on Category.
 - **Auth** uses Google Identity Services' implicit token-client flow —
   no refresh token, so a session needs re-auth after the access token
   expires (~1 hour). Fine for a first pass; a longer-lived session would
@@ -137,7 +144,7 @@ src/
     sheetsApi.ts        thin Sheets API v4 fetch wrapper
     masterSheet.ts       master-sheet row parsing + write-back + live taxonomy read
     ocrParser.ts          generic OCR-tab section parser (see comments — this is the trickiest part)
-    taxonomy.ts            fallback taxonomy + live/fallback merge + Category→Status mapping
+    taxonomy.ts            fallback taxonomy + live/fallback merge
     presentation.ts          purely cosmetic helpers (badge colors, avatar initials)
     mockData.ts               demo-mode fixtures (also the parser's test fixtures)
   hooks/usePortal.ts    all app state + data-loading + submit logic

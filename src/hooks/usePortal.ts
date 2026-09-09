@@ -6,14 +6,15 @@ import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData
 import { buildDecisionUpdates, readLiveTaxonomy, parseMasterRows, parseSheetUrlHref } from '../lib/masterSheet'
 import { buildOcrCellUpdates, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getGridData, getValues, listTabs } from '../lib/sheetsApi'
-import { mergeTaxonomy, statusForCategory } from '../lib/taxonomy'
+import { mergeTaxonomy } from '../lib/taxonomy'
 import type { CategoryValue, DecisionDraft, MasterRow, OcrDocument, OcrSection, QueueFilters, Taxonomy } from '../lib/types'
 
-const EMPTY_DRAFT: DecisionDraft = { category: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
+const EMPTY_DRAFT: DecisionDraft = { category: '', status: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
 
 function seedDraft(row: MasterRow): DecisionDraft {
   return {
     category: row.category,
+    status: row.status,
     rejectionReason: row.rejectionReason,
     fraudReason: row.fraudReason,
     reclassified: row.reclassified,
@@ -294,12 +295,14 @@ export function usePortal() {
 
   // --- Submit -------------------------------------------------------------
   const submit = useCallback(async () => {
-    if (!selectedRow || decisionDraft.category === '') return
+    // Category and Status are independent — see DecisionDraft's comments —
+    // so both must be explicitly set; neither is derived from the other.
+    if (!selectedRow || decisionDraft.category === '' || decisionDraft.status === '') return
     const category: CategoryValue = decisionDraft.category
     const decision = {
       category,
       rejectionReason: decisionDraft.rejectionReason,
-      status: statusForCategory(category),
+      status: decisionDraft.status,
       fraudReason: decisionDraft.fraudReason,
       reclassified: decisionDraft.reclassified,
       flags: decisionDraft.flags,

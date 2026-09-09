@@ -86,12 +86,14 @@ export async function readLiveTaxonomy(spreadsheetId: string, tabTitle: string, 
 
   const columnCells = (col: MasterColumn) => dataRows.map((row) => row[COLUMN_INDEX[col]]).filter(Boolean)
 
-  return {
-    category: extractValidationList(columnCells('Category')),
-    rejectionReasonsFlat: extractValidationList(columnCells('Rejection Reason')),
-    fraudReasons: extractValidationList(columnCells('Fraud Reason')),
-    reclassifyOptions: extractValidationList(columnCells('Re-classified')),
-  }
+  const [category, rejectionReasonsFlat, fraudReasons, reclassifyOptions] = await Promise.all([
+    extractValidationList(columnCells('Category'), spreadsheetId, accessToken),
+    extractValidationList(columnCells('Rejection Reason'), spreadsheetId, accessToken),
+    extractValidationList(columnCells('Fraud Reason'), spreadsheetId, accessToken),
+    extractValidationList(columnCells('Re-classified'), spreadsheetId, accessToken),
+  ])
+
+  return { category, rejectionReasonsFlat, fraudReasons, reclassifyOptions }
 }
 
 export interface MasterRowDecision {

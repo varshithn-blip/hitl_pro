@@ -118,7 +118,14 @@ export interface Taxonomy {
  * Submit writes them back. Starts seeded from the row's existing values
  * (blank Category/'' for an unreviewed row). */
 export interface DecisionDraft {
+  /** Document validity — independent from `status` below (a Valid
+   * document can still be Rejected for other reasons, and vice versa;
+   * neither is derived from the other). */
   category: CategoryValue | ''
+  /** The Approve/Reject outcome. Only 2 real values exist in the sheet
+   * (no "Incomplete" status — that's a Category value, not a Status
+   * one). */
+  status: StatusValue | ''
   rejectionReason: string
   fraudReason: string[]
   reclassified: string

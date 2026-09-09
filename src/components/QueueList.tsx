@@ -52,8 +52,10 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
 
         {rows.map((row) => {
           const selected = row.requestId === selectedRequestId
+          const isDone = row.status !== ''
           const badge = docTypeBadge(row.documentType)
           const avatar = avatarColor(row.reviewer)
+          const statusLabel = row.status === 'Manually Approved' ? 'Approved' : row.status === 'Manually Rejected' ? 'Rejected' : 'Pending'
           return (
             <button
               key={row.requestId}
@@ -67,6 +69,10 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 6,
+                // Pending rows recede so completed ones (full color, a
+                // clear Approved/Rejected label below) stand out at a
+                // glance — the ask was "not clear what's done vs not".
+                opacity: isDone || selected ? 1 : 0.55,
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -84,7 +90,17 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
                 >
                   {row.transactionId}
                 </span>
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusDotColor(row), flexShrink: 0 }} />
+                <span
+                  style={{
+                    fontSize: 9.5,
+                    fontWeight: 700,
+                    letterSpacing: '0.03em',
+                    textTransform: 'uppercase',
+                    color: isDone ? statusDotColor(row) : 'var(--text-muted)',
+                  }}
+                >
+                  {statusLabel}
+                </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span
@@ -93,8 +109,8 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
                     fontWeight: 600,
                     padding: '2px 7px',
                     borderRadius: 5,
-                    background: badge.bg,
-                    color: badge.fg,
+                    background: isDone ? badge.bg : 'oklch(93% 0.006 255)',
+                    color: isDone ? badge.fg : 'var(--text-secondary)',
                   }}
                 >
                   {badge.label}
@@ -105,8 +121,8 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
                     width: 17,
                     height: 17,
                     borderRadius: '50%',
-                    background: avatar.bg,
-                    color: avatar.fg,
+                    background: isDone ? avatar.bg : 'oklch(90% 0.006 255)',
+                    color: isDone ? avatar.fg : 'var(--text-secondary)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',

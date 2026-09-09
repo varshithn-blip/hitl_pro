@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { DEMO_MODE } from '../lib/config'
 import { docTypeBadge } from '../lib/presentation'
 import type { MasterRow } from '../lib/types'
@@ -19,10 +19,26 @@ interface Props {
 const ZOOM_STEP = 25
 const MIN_ZOOM = 50
 const MAX_ZOOM = 300
+// How many zoom-% points one "notch" of ctrl+wheel/pinch moves — trackpad
+// pinch gestures fire many small wheel events, so this is deliberately
+// gentler than the +/- buttons' fixed ZOOM_STEP.
+const WHEEL_ZOOM_SENSITIVITY = 0.5
+
+function clampZoom(z: number) {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
+}
 
 export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl, imageLoadError }: Props) {
   const [zoom, setZoom] = useState(100)
   const [rotation, setRotation] = useState(0)
+  const [isDragging, setIsDragging] = useState(false)
+
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const dragStateRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null)
+  // Where to move scroll to AFTER the next re-render picks up a new zoom,
+  // so a cursor-anchored zoom (see handleWheel) lands correctly against
+  // the post-zoom scrollable size rather than the stale pre-zoom one.
+  const pendingScrollRef = useRef<{ left: number; top: number } | null>(null)
 
   const siblingIndex = siblingDocs.findIndex((d) => d.requestId === row.requestId)
   const hasSiblings = siblingDocs.length > 1
@@ -35,6 +51,80 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
   }
 
   const badge = docTypeBadge(row.documentType)
+
+  // Ctrl+wheel (trackpad pinch shows up as this) zooms the image and stops
+  // there — without preventDefault the browser zooms the whole page
+  // instead, which was the original complaint. Plain wheel/two-finger
+  // scroll (no ctrlKey) is left alone entirely, so it pans via the
+  // container's native scrolling. Attached as a real DOM listener with
+  // {passive:false}, since React's onWheel can't reliably preventDefault
+  // a gesture the browser wants to treat as page zoom.
+  useEffect(() => {
+    const el = canvasRef.current
+    if (!el) return
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return // plain scroll: let native panning happen
+      e.preventDefault()
+
+      const rect = el.getBoundingClientRect()
+      const pointerX = e.clientX - rect.left + el.scrollLeft
+      const pointerY = e.clientY - rect.top + el.scrollTop
+
+      setZoom((prevZoom) => {
+        const nextZoom = clampZoom(prevZoom - e.deltaY * WHEEL_ZOOM_SENSITIVITY)
+        const scaleRatio = nextZoom / prevZoom
+        pendingScrollRef.current = {
+          left: pointerX * scaleRatio - (e.clientX - rect.left),
+          top: pointerY * scaleRatio - (e.clientY - rect.top),
+        }
+        return nextZoom
+      })
+    }
+
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [])
+
+  // Applies a cursor-anchored zoom's pending scroll position once the DOM
+  // has actually re-rendered at the new scale (scrollWidth/scrollHeight
+  // only reflect the new size after that render).
+  useLayoutEffect(() => {
+    if (pendingScrollRef.current && canvasRef.current) {
+      canvasRef.current.scrollLeft = pendingScrollRef.current.left
+      canvasRef.current.scrollTop = pendingScrollRef.current.top
+      pendingScrollRef.current = null
+    }
+  }, [zoom])
+
+  // Click-and-drag panning, in addition to native scrollbar/trackpad
+  // scrolling — the more discoverable "grab and drag" interaction people
+  // expect from an image/map viewer.
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 || !canvasRef.current) return
+    dragStateRef.current = { x: e.clientX, y: e.clientY, scrollLeft: canvasRef.current.scrollLeft, scrollTop: canvasRef.current.scrollTop }
+    setIsDragging(true)
+  }
+
+  useEffect(() => {
+    if (!isDragging) return
+    const handleMouseMove = (e: MouseEvent) => {
+      const start = dragStateRef.current
+      if (!start || !canvasRef.current) return
+      canvasRef.current.scrollLeft = start.scrollLeft - (e.clientX - start.x)
+      canvasRef.current.scrollTop = start.scrollTop - (e.clientY - start.y)
+    }
+    const handleMouseUp = () => {
+      dragStateRef.current = null
+      setIsDragging(false)
+    }
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isDragging])
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-app)', borderRight: '1px solid var(--border)' }}>
@@ -69,11 +159,11 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <IconButton onClick={() => setZoom((z) => Math.max(MIN_ZOOM, z - ZOOM_STEP))} title="Zoom out">
+          <IconButton onClick={() => setZoom((z) => clampZoom(z - ZOOM_STEP))} title="Zoom out">
             <ZoomOut size={14} />
           </IconButton>
-          <span style={{ fontSize: 11.5, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', width: 40, textAlign: 'center' }}>{zoom}%</span>
-          <IconButton onClick={() => setZoom((z) => Math.min(MAX_ZOOM, z + ZOOM_STEP))} title="Zoom in">
+          <span style={{ fontSize: 11.5, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', width: 40, textAlign: 'center' }}>{Math.round(zoom)}%</span>
+          <IconButton onClick={() => setZoom((z) => clampZoom(z + ZOOM_STEP))} title="Zoom in">
             <ZoomIn size={14} />
           </IconButton>
           <Divider />
@@ -133,6 +223,8 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
       </div>
 
       <div
+        ref={canvasRef}
+        onMouseDown={handleMouseDown}
         style={{
           flex: 1,
           minHeight: 0,
@@ -143,16 +235,23 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
           backgroundImage: 'radial-gradient(circle, oklch(90% 0.006 255) 1px, transparent 1px)',
           backgroundSize: '20px 20px',
           overflow: 'auto',
+          cursor: isDragging ? 'grabbing' : 'grab',
+          userSelect: isDragging ? 'none' : undefined,
         }}
       >
         <div
           style={{
             transform: `scale(${zoom / 100}) rotate(${rotation}deg)`,
-            transition: 'transform 120ms ease',
+            transition: isDragging ? 'none' : 'transform 120ms ease',
           }}
         >
           {imagePreviewUrl ? (
-            <img src={imagePreviewUrl} alt="Document" style={{ maxWidth: 480, borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }} />
+            <img
+              src={imagePreviewUrl}
+              alt="Document"
+              draggable={false}
+              style={{ maxWidth: 480, borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }}
+            />
           ) : (
             <DocumentPlaceholder error={imageLoadError} />
           )}
@@ -170,9 +269,10 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
             border: '1px solid var(--border-strong)',
             padding: '4px 10px',
             borderRadius: 6,
+            pointerEvents: 'none',
           }}
         >
-          {zoom}% {rotation !== 0 && `· rotated ${rotation}°`}
+          {Math.round(zoom)}% {rotation !== 0 && `· rotated ${rotation}°`}
         </div>
       </div>
     </div>
