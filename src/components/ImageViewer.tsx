@@ -45,7 +45,12 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
   const [isDragging, setIsDragging] = useState(false)
 
   const canvasRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const dragStateRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null)
+  // The rotated content's own (pre-rotation) box size, kept in sync via
+  // ResizeObserver — needed to fix panning at 90°/270°. See the render
+  // below for why.
+  const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null)
   // Where to move scroll to AFTER the next re-render picks up a new zoom,
   // so a cursor-anchored zoom (see handleWheel) lands correctly against
   // the post-zoom scrollable size rather than the stale pre-zoom one.
@@ -56,6 +61,7 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
   // iframe instead — it already has its own zoom/pan/page navigation, so
   // none of this component's custom zoom/rotate/pan machinery applies.
   const isPdf = isPdfMimeType(imagePreviewType)
+  const isSideways = rotation === 90 || rotation === 270
 
   const siblingIndex = siblingDocs.findIndex((d) => d.requestId === row.requestId)
   const hasSiblings = siblingDocs.length > 1
@@ -113,6 +119,29 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
       pendingScrollRef.current = null
     }
   }, [zoom])
+
+  // Tracks the rotated content's own (pre-rotation) rendered size. Needed
+  // because `transform: rotate()` — like `scale()` before it — doesn't
+  // affect layout size: at 90°/270° the visual footprint is the WIDTH and
+  // HEIGHT swapped, but every ancestor doing size-based layout (the
+  // fit-content centering wrapper below, and therefore this scrollable
+  // container's scrollWidth/scrollHeight) still measures the untouched,
+  // un-swapped box. That mismatch is exactly why panning broke once
+  // rotated: the scrollable area kept the unrotated shape's dimensions
+  // instead of the rotated one's, so it couldn't extend far enough in
+  // whichever axis the rotation had actually made larger. Observing (not
+  // just reading once) is what keeps this correct as zoom changes too,
+  // not just on mount.
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el) return
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.borderBoxSize?.[0]
+      setContentSize(box ? { width: box.inlineSize, height: box.blockSize } : { width: el.offsetWidth, height: el.offsetHeight })
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   // Click-and-drag panning, in addition to native scrollbar/trackpad
   // scrolling — the more discoverable "grab and drag" interaction people
@@ -277,17 +306,43 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
               when the *painted* content is much bigger, silently capping
               how far you can scroll toward the near edge. */}
           <div style={{ minWidth: '100%', minHeight: '100%', width: 'fit-content', height: 'fit-content', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ transform: `rotate(${rotation}deg)`, transition: isDragging ? 'none' : 'transform 120ms ease' }}>
-              {imagePreviewUrl ? (
-                <img
-                  src={imagePreviewUrl}
-                  alt="Document"
-                  draggable={false}
-                  style={{ display: 'block', width: BASE_DISPLAY_WIDTH * (zoom / 100), borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }}
-                />
-              ) : (
-                <DocumentPlaceholder error={imageLoadError} zoom={zoom} />
-              )}
+            {/* Sized to the SWAPPED (visual, post-rotation) footprint at
+                90°/270° once contentSize is known, so this box's own
+                layout size matches what's actually painted — the fix for
+                the comment above `useEffect`'s ResizeObserver. At
+                0°/180° no swap is needed (rotation doesn't change the
+                bounding box), so it just shrinks to the content's own
+                size like before. Always the SAME two nested elements
+                (never conditionally mounted/unmounted) so the
+                ResizeObserver's target node never changes out from under
+                it. */}
+            <div
+              style={
+                isSideways && contentSize
+                  ? { position: 'relative', width: contentSize.height, height: contentSize.width }
+                  : { position: 'relative', width: 'fit-content', height: 'fit-content' }
+              }
+            >
+              <div
+                ref={contentRef}
+                style={{
+                  ...(isSideways && contentSize ? { position: 'absolute', inset: 0, margin: 'auto' } : undefined),
+                  width: 'fit-content',
+                  transform: `rotate(${rotation}deg)`,
+                  transition: isDragging ? 'none' : 'transform 120ms ease',
+                }}
+              >
+                {imagePreviewUrl ? (
+                  <img
+                    src={imagePreviewUrl}
+                    alt="Document"
+                    draggable={false}
+                    style={{ display: 'block', width: BASE_DISPLAY_WIDTH * (zoom / 100), borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }}
+                  />
+                ) : (
+                  <DocumentPlaceholder error={imageLoadError} zoom={zoom} />
+                )}
+              </div>
             </div>
           </div>
 
