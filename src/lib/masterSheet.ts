@@ -74,9 +74,66 @@ export function parseMasterRow(cells: GridCell[], sheetRowNumber: number): Maste
   }
 }
 
-export function parseMasterRows(grid: GridCell[][]): MasterRow[] {
-  // grid[0] is the header row; data starts at grid[1] = sheet row 2.
-  return grid.slice(1).map((cells, i) => parseMasterRow(cells, i + 2))
+/** How many rows one grid-data request pulls at a time when loading a
+ * date tab's full row list (see `fetchMasterRows`). Bounds any single
+ * request/response to a size that won't hang or crash a browser tab, even
+ * when the tab has thousands of rows in production. */
+const ROW_BATCH_SIZE = 500
+
+export interface MasterRowsLoadProgress {
+  loaded: number
+  total: number
+}
+
+/** Load every row of a date tab in bounded chunks instead of one request
+ * for the whole thing. A production date tab has run into the thousands
+ * of rows (~3000 observed) — a single `spreadsheets.get` for all of them
+ * (especially with hyperlink metadata on every cell) produces a JSON
+ * payload large enough to hang or crash the reviewer's tab. Two fixes
+ * combined here:
+ *
+ * 1. Fetch in pages of `ROW_BATCH_SIZE` rows, sequentially, calling
+ *    `onBatch` after each page lands — the queue can render and become
+ *    usable after the *first* page instead of staying blank until every
+ *    row is in.
+ * 2. Skip `dataValidation` metadata entirely for this read (see
+ *    `getGridData`'s `includeValidation` option) — this call only ever
+ *    reads `formattedValue`/`hyperlink`, never a validation rule, so
+ *    asking for it was pure waste, and a expensive one: Sheets repeats a
+ *    rule's full option list on every cell it's attached to.
+ *
+ * `shouldContinue` is checked before each page so an effect that's since
+ * been cancelled (reviewer switched date tabs mid-load) stops making
+ * further requests instead of racing to finish a now-discarded fetch. */
+export async function fetchMasterRows(
+  spreadsheetId: string,
+  tabTitle: string,
+  accessToken: string,
+  onBatch: (rows: MasterRow[], progress: MasterRowsLoadProgress) => void,
+  shouldContinue: () => boolean = () => true,
+): Promise<void> {
+  const quotedTab = `'${tabTitle.replace(/'/g, "''")}'`
+
+  // Cheap probe for the real row count: a plain single-column values read
+  // (no formatting/hyperlink/validation metadata) of App ID, which the
+  // sheet's own template populates on every real row. Sheets' values.get
+  // trims trailing blank rows, so this array's length is the row count.
+  const probeColumn = await getValues(spreadsheetId, `${quotedTab}!A2:A20000`, accessToken)
+  const total = probeColumn.length
+  if (total === 0) {
+    onBatch([], { loaded: 0, total: 0 })
+    return
+  }
+
+  let loaded = 0
+  for (let start = 2; start <= total + 1; start += ROW_BATCH_SIZE) {
+    if (!shouldContinue()) return
+    const end = Math.min(start + ROW_BATCH_SIZE - 1, total + 1)
+    const grid = await getGridData(spreadsheetId, `${quotedTab}!A${start}:P${end}`, accessToken, { includeValidation: false })
+    const rows = grid.map((cells, i) => parseMasterRow(cells, start + i))
+    loaded += rows.length
+    onBatch(rows, { loaded, total })
+  }
 }
 
 /** The columns a reviewer actually writes back on submit. Image URL, Sheet

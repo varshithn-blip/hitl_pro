@@ -62,13 +62,29 @@ export interface GridCell {
   }
 }
 
-/** Fetch a sheet range with hyperlink + data-validation metadata, not just
- * plain values — needed to resolve the Image URL/Drive Link/Sheet URL link
- * chips, and to read dropdown option lists straight from the sheet. Plain
- * value reads (no metadata needed) should use `getValues` instead — it's
- * a much lighter request. */
-export async function getGridData(spreadsheetId: string, a1Range: string, accessToken: string): Promise<GridCell[][]> {
-  const fields = 'sheets(data(rowData(values(formattedValue,hyperlink,dataValidation))))'
+/** Fetch a sheet range with hyperlink (+ by default, data-validation)
+ * metadata, not just plain values — needed to resolve the Image URL/Drive
+ * Link/Sheet URL link chips, and to read dropdown option lists straight
+ * from the sheet. Plain value reads (no metadata needed) should use
+ * `getValues` instead — it's a much lighter request.
+ *
+ * `includeValidation` defaults to true for backward compatibility, but
+ * pass `false` for any range where dataValidation isn't actually read —
+ * Sheets repeats a rule's *entire* option list on every single cell it's
+ * attached to, not once per column, so requesting it over a rule that
+ * spans thousands of rows (e.g. the master sheet's Category/Rejection
+ * Reason columns) makes the response balloon well past what the plain
+ * values would cost on their own. */
+export async function getGridData(
+  spreadsheetId: string,
+  a1Range: string,
+  accessToken: string,
+  options?: { includeValidation?: boolean },
+): Promise<GridCell[][]> {
+  const includeValidation = options?.includeValidation ?? true
+  const fields = includeValidation
+    ? 'sheets(data(rowData(values(formattedValue,hyperlink,dataValidation))))'
+    : 'sheets(data(rowData(values(formattedValue,hyperlink))))'
   const data = await sheetsFetch(
     `/${spreadsheetId}?ranges=${encodeURIComponent(a1Range)}&fields=${encodeURIComponent(fields)}`,
     accessToken,

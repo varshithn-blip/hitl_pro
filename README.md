@@ -47,6 +47,18 @@ real and clickable — only the data source is fake.
   Reviewer, Status, and API Called (a 3-state filter: any / done only /
   not done — not a plain distinct-values dropdown, per the confirmed
   spec).
+- **Batched row loading** — a production date tab can run into the
+  thousands of rows (~3000 observed). Fetching that in one
+  `spreadsheets.get` — especially with hyperlink/validation metadata on
+  every cell — produces a JSON response big enough to hang or crash the
+  reviewer's browser tab. `lib/masterSheet.ts` → `fetchMasterRows` instead:
+  probes the real row count with one cheap plain-values read, then pulls
+  the full grid in pages of 500 rows, skipping `dataValidation` entirely
+  for this read (it's never used here, and Sheets repeats a rule's whole
+  option list on every cell it's attached to — expensive over thousands of
+  rows). The queue becomes usable after the first page lands rather than
+  waiting on the whole tab; the status bar shows "Loading documents… N /
+  total" while later pages stream in behind it.
 - **Queue** — the filtered rows, click one to open it.
 - **Document view** — image or PDF, detected from the file's real content
   type (a submitted document is just as often a scanned multi-page PDF as

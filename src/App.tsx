@@ -101,7 +101,13 @@ export default function App() {
             )}
           </div>
 
-          <StatusFooter queueCount={p.masterRows.length} pendingCount={p.pendingCount} syncState={p.syncState} syncMessage={p.syncState === 'error' ? p.syncMessage : undefined} />
+          <StatusFooter
+            queueCount={p.masterRows.length}
+            pendingCount={p.pendingCount}
+            syncState={p.syncState}
+            syncMessage={p.syncState === 'error' ? p.syncMessage : undefined}
+            loadingProgress={p.rowsLoadProgress}
+          />
         </>
       )}
     </div>

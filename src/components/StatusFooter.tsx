@@ -3,6 +3,10 @@ interface Props {
   pendingCount: number
   syncState: 'idle' | 'saving' | 'saved' | 'error'
   syncMessage?: string
+  /** Set while a large date tab is still streaming in past its first
+   * batch (see usePortal.ts `fetchMasterRows`) — surfaces "loading, not
+   * stuck" for a queue that can run into the thousands of rows. */
+  loadingProgress?: { loaded: number; total: number } | null
 }
 
 const SYNC_LABEL: Record<Props['syncState'], string> = {
@@ -19,7 +23,7 @@ const SYNC_COLOR: Record<Props['syncState'], string> = {
   error: 'var(--danger)',
 }
 
-export function StatusFooter({ queueCount, pendingCount, syncState, syncMessage }: Props) {
+export function StatusFooter({ queueCount, pendingCount, syncState, syncMessage, loadingProgress }: Props) {
   return (
     <div
       style={{
@@ -40,7 +44,15 @@ export function StatusFooter({ queueCount, pendingCount, syncState, syncMessage 
         {syncMessage ?? SYNC_LABEL[syncState]}
       </div>
       <div>
-        {queueCount} documents · {pendingCount} pending review
+        {loadingProgress ? (
+          <span style={{ color: 'var(--warning)' }}>
+            Loading documents… {loadingProgress.loaded} / {loadingProgress.total}
+          </span>
+        ) : (
+          <>
+            {queueCount} documents · {pendingCount} pending review
+          </>
+        )}
       </div>
     </div>
   )

@@ -3,9 +3,9 @@ import { CONFIG, DEMO_MODE } from '../lib/config'
 import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
-import { buildDecisionUpdates, isDateTabTitle, readLiveTaxonomy, parseMasterRows, parseSheetUrlHref } from '../lib/masterSheet'
+import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
-import { batchUpdateValues, getGridData, getValues, listTabs } from '../lib/sheetsApi'
+import { batchUpdateValues, getValues, listTabs } from '../lib/sheetsApi'
 import { mergeTaxonomy } from '../lib/taxonomy'
 import type { CategoryValue, DecisionDraft, MasterRow, OcrDocument, OcrSection, QueueFilters, Taxonomy } from '../lib/types'
 
@@ -36,6 +36,10 @@ export function usePortal() {
   const [dateTabs, setDateTabs] = useState<string[]>(DEMO_MODE ? MOCK_DATE_TABS : [])
   const [masterRows, setMasterRows] = useState<MasterRow[]>(DEMO_MODE ? MOCK_MASTER_ROWS : [])
   const [loadingRows, setLoadingRows] = useState(false)
+  /** Non-null while a date tab's rows are still streaming in past the
+   * first batch (see `fetchMasterRows`) — lets the UI show "1500 / 3038"
+   * instead of leaving the reviewer guessing whether it's still working. */
+  const [rowsLoadProgress, setRowsLoadProgress] = useState<MasterRowsLoadProgress | null>(null)
   const [rowsError, setRowsError] = useState<string | null>(null)
 
   const [filters, setFilters] = useState<QueueFilters>({
@@ -108,20 +112,44 @@ export function usePortal() {
   }, [user])
 
   // --- Load master rows for the selected date tab (real mode only) -----
+  // A production date tab has run into the thousands of rows (~3000
+  // observed), so this streams in bounded batches (fetchMasterRows) rather
+  // than requesting the whole tab in one shot — see its comments for why
+  // that was crashing/hanging the browser. The queue becomes usable after
+  // the first batch; loadingRows only covers that initial wait, while
+  // rowsLoadProgress tracks the rest streaming in behind it.
   useEffect(() => {
     if (DEMO_MODE || !user || !CONFIG.masterSheetId || !filters.date) return
     let cancelled = false
     setLoadingRows(true)
     setRowsError(null)
+    setRowsLoadProgress(null)
+    setMasterRows([])
     ;(async () => {
+      let firstBatch = true
       try {
-        const quotedTab = `'${filters.date.replace(/'/g, "''")}'`
-        const grid = await getGridData(CONFIG.masterSheetId!, `${quotedTab}!A1:P5000`, user.accessToken)
-        if (!cancelled) setMasterRows(parseMasterRows(grid))
+        await fetchMasterRows(
+          CONFIG.masterSheetId!,
+          filters.date,
+          user.accessToken,
+          (rows, progress) => {
+            if (cancelled) return
+            setMasterRows((prev) => [...prev, ...rows])
+            setRowsLoadProgress(progress.loaded < progress.total ? progress : null)
+            if (firstBatch) {
+              setLoadingRows(false)
+              firstBatch = false
+            }
+          },
+          () => !cancelled,
+        )
       } catch (err) {
         if (!cancelled) setRowsError(err instanceof Error ? err.message : 'Failed to load documents for this date')
       } finally {
-        if (!cancelled) setLoadingRows(false)
+        if (!cancelled) {
+          setLoadingRows(false)
+          setRowsLoadProgress(null)
+        }
       }
     })()
     return () => {
@@ -370,6 +398,7 @@ export function usePortal() {
     masterRows,
     filteredRows,
     loadingRows,
+    rowsLoadProgress,
     rowsError,
     pendingCount,
 
