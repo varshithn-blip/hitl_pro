@@ -1,6 +1,17 @@
-import { columnLetter, extractValidationList, getGridData, type CellUpdate, type GridCell } from './sheetsApi'
+import { columnLetter, extractValidationList, getGridData, getValues, type CellUpdate, type GridCell, type SheetTab } from './sheetsApi'
 import type { LiveTaxonomyRead } from './taxonomy'
 import { MASTER_COLUMNS, type CategoryValue, type MasterColumn, type MasterRow, type StatusValue } from './types'
+
+/** Matches the master sheet's date-tab naming convention ("03-09-2026").
+ * Used to keep tabs added for other purposes (the "Ref" rejection-reason
+ * lookup, the "Reviewers" notes tab, ...) out of the Date filter and out
+ * of the "most recent tab" pick that seeds it — a non-date tab living in
+ * the same spreadsheet must never be mistaken for a day's queue. */
+const DATE_TAB_PATTERN = /^\d{2}-\d{2}-\d{4}$/
+
+export function isDateTabTitle(title: string): boolean {
+  return DATE_TAB_PATTERN.test(title.trim())
+}
 
 const COLUMN_INDEX: Record<MasterColumn, number> = Object.fromEntries(
   MASTER_COLUMNS.map((c, i) => [c, i]),
@@ -73,12 +84,56 @@ export function parseMasterRows(grid: GridCell[][]): MasterRow[] {
  * Processed are all left untouched by the portal — see plan notes. */
 const REVIEWER_EDITABLE_COLUMNS: MasterColumn[] = ['Category', 'Rejection Reason', 'Status', 'Fraud Reason', 'Re-classified', 'Flags']
 
-/** Read the Category / Rejection Reason / Fraud Reason / Re-classified
- * columns' data-validation rules straight off the sheet, per the "read the
- * sheet's own dropdowns, hardcoded list is just a fallback" decision.
+/** Pure parsing half of the "Ref" tab read (see `readRejectionReasonRefSheet`
+ * below) — kept separate from the network fetch so it can be sanity-checked
+ * against real fixture rows in scripts/verify-parser.ts without a live API
+ * call. Column order and count aren't assumed: each header cell is parsed
+ * for its trailing "- <type>" to find which document type it belongs to,
+ * so reordering or adding a column on the Ref tab doesn't need a code
+ * change — only the header text needs to keep ending in "- <type>". */
+export function parseRejectionReasonRefRows(rows: string[][]): Record<string, string[]> | null {
+  const [header, ...dataRows] = rows
+  if (!header) return null
+
+  const byDocType: Record<string, string[]> = {}
+  header.forEach((headerCell, colIndex) => {
+    const match = headerCell?.match(/-\s*([a-zA-Z]+)\s*$/)
+    if (!match) return // header doesn't look like "Rejection Reason - <type>" — skip rather than guess
+    const docType = match[1].trim().toLowerCase()
+    const values = dataRows.map((row) => row[colIndex]?.trim()).filter((v): v is string => Boolean(v))
+    if (values.length > 0) byDocType[docType] = values
+  })
+
+  return Object.keys(byDocType).length > 0 ? byDocType : null
+}
+
+/** The master sheet's own Rejection Reason column is shared across every
+ * row regardless of document type, so its data-validation rule (if any) is
+ * necessarily one flat list — it structurally can't vary by document type.
+ * The real payslip/credit/coe/loan breakdown lives in a dedicated "Ref"
+ * tab maintained by hand in the same spreadsheet: one column per document
+ * type, headed "Rejection Reason - <type>". Read that instead of the
+ * column's own validation rule for this one field. */
+async function readRejectionReasonRefSheet(spreadsheetId: string, tabs: SheetTab[], accessToken: string): Promise<Record<string, string[]> | null> {
+  const refTab = tabs.find((t) => t.title.trim().toLowerCase() === 'ref')
+  if (!refTab) return null
+
+  const quotedTab = `'${refTab.title.replace(/'/g, "''")}'`
+  try {
+    const rows = await getValues(spreadsheetId, `${quotedTab}!A1:Z500`, accessToken)
+    return parseRejectionReasonRefRows(rows)
+  } catch {
+    return null
+  }
+}
+
+/** Read the Category / Fraud Reason / Re-classified columns' data-
+ * validation rules straight off the sheet, per the "read the sheet's own
+ * dropdowns, hardcoded list is just a fallback" decision, plus the
+ * per-doc-type Rejection Reason lists from the "Ref" tab (see above).
  * Checks the first few data rows (not just row 2) since a rule can in
  * theory be scoped to a sub-range rather than the whole column. */
-export async function readLiveTaxonomy(spreadsheetId: string, tabTitle: string, accessToken: string): Promise<LiveTaxonomyRead> {
+export async function readLiveTaxonomy(spreadsheetId: string, tabTitle: string, tabs: SheetTab[], accessToken: string): Promise<LiveTaxonomyRead> {
   const quotedTab = `'${tabTitle.replace(/'/g, "''")}'`
   const sampleRows = 26 // header + 25 data rows — a little deep on purpose, so an early run of rows that happen to be all-blank on a given column doesn't look like "no rule" when there is one
   const grid = await getGridData(spreadsheetId, `${quotedTab}!A1:P${sampleRows}`, accessToken)
@@ -86,14 +141,14 @@ export async function readLiveTaxonomy(spreadsheetId: string, tabTitle: string, 
 
   const columnCells = (col: MasterColumn) => dataRows.map((row) => row[COLUMN_INDEX[col]]).filter(Boolean)
 
-  const [category, rejectionReasonsFlat, fraudReasons, reclassifyOptions] = await Promise.all([
+  const [category, fraudReasons, reclassifyOptions, rejectionReasonsByDocType] = await Promise.all([
     extractValidationList(columnCells('Category'), spreadsheetId, accessToken),
-    extractValidationList(columnCells('Rejection Reason'), spreadsheetId, accessToken),
     extractValidationList(columnCells('Fraud Reason'), spreadsheetId, accessToken),
     extractValidationList(columnCells('Re-classified'), spreadsheetId, accessToken),
+    readRejectionReasonRefSheet(spreadsheetId, tabs, accessToken),
   ])
 
-  return { category, rejectionReasonsFlat, fraudReasons, reclassifyOptions }
+  return { category, fraudReasons, reclassifyOptions, rejectionReasonsByDocType }
 }
 
 export interface MasterRowDecision {

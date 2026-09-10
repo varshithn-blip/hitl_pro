@@ -3,7 +3,7 @@ import { CONFIG, DEMO_MODE } from '../lib/config'
 import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
-import { buildDecisionUpdates, readLiveTaxonomy, parseMasterRows, parseSheetUrlHref } from '../lib/masterSheet'
+import { buildDecisionUpdates, isDateTabTitle, readLiveTaxonomy, parseMasterRows, parseSheetUrlHref } from '../lib/masterSheet'
 import { buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getGridData, getValues, listTabs } from '../lib/sheetsApi'
 import { mergeTaxonomy } from '../lib/taxonomy'
@@ -83,11 +83,19 @@ export function usePortal() {
       try {
         const tabs = await listTabs(CONFIG.masterSheetId!, user.accessToken)
         if (cancelled) return
-        const titles = tabs.sort((a, b) => b.index - a.index).map((t) => t.title)
-        setDateTabs(titles)
-        setFilters((f) => ({ ...f, date: f.date || titles[0] || '' }))
-        if (titles[0]) {
-          const live = await readLiveTaxonomy(CONFIG.masterSheetId!, titles[0], user.accessToken)
+        // Only date-named tabs ("03-09-2026") are a day's queue — other
+        // tabs in the same spreadsheet (the "Ref" rejection-reason lookup,
+        // the "Reviewers" notes tab, ...) must never show up as a date
+        // option or get mistaken for the most recent one.
+        const dateTitles = tabs
+          .filter((t) => isDateTabTitle(t.title))
+          .sort((a, b) => b.index - a.index)
+          .map((t) => t.title)
+        setDateTabs(dateTitles)
+        setFilters((f) => ({ ...f, date: f.date || dateTitles[0] || '' }))
+        const sampleTabTitle = dateTitles[0] ?? tabs[0]?.title
+        if (sampleTabTitle) {
+          const live = await readLiveTaxonomy(CONFIG.masterSheetId!, sampleTabTitle, tabs, user.accessToken)
           if (!cancelled) setTaxonomy(mergeTaxonomy(live))
         }
       } catch (err) {

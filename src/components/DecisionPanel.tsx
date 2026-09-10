@@ -167,7 +167,7 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={fieldLabelStyle}>Rejection reason</span>
-            <SourceBadge source={taxonomy.source.rejectionReason} count={reasons.length} />
+            <SourceBadge source={taxonomy.source.rejectionReasonByDocType[docType] ?? 'fallback'} count={reasons.length} />
           </div>
           <select value={draft.rejectionReason} onChange={(e) => onChange({ ...draft, rejectionReason: e.target.value })} style={selectBoxStyle}>
             <option value="">Select a reason…</option>

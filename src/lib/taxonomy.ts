@@ -1,4 +1,4 @@
-import type { Taxonomy } from './types'
+import type { Taxonomy, TaxonomyFieldSource } from './types'
 
 // Fallback taxonomy — used only when the live read of the master sheet's
 // own data-validation rules (see sheetsApi.ts `readTaxonomyFromSheet`)
@@ -109,7 +109,12 @@ export const FALLBACK_TAXONOMY: Taxonomy = {
 
   reclassifyOptions: ['payslip', 'credit', 'loan', 'coe'],
 
-  source: { category: 'fallback', rejectionReason: 'fallback', fraudReasons: 'fallback', reclassifyOptions: 'fallback' },
+  source: {
+    category: 'fallback',
+    rejectionReasonByDocType: { payslip: 'fallback', credit: 'fallback', loan: 'fallback', coe: 'fallback' },
+    fraudReasons: 'fallback',
+    reclassifyOptions: 'fallback',
+  },
 }
 
 /** Strip a trailing "_<n>" (loan_0, loan_1, payslip_0, ...) to get the base
@@ -123,38 +128,39 @@ export function baseDocType(documentType: string): string {
 
 export interface LiveTaxonomyRead {
   category?: string[] | null
-  /** The master sheet has ONE Rejection Reason column shared by every
-   * document type, so its data-validation rule (if any) is necessarily a
-   * single flat list covering all document types at once — there's no way
-   * for a single column's dropdown to vary by row/doc-type. */
-  rejectionReasonsFlat?: string[] | null
+  /** Per-document-type rejection reason lists, read from the master
+   * spreadsheet's dedicated "Ref" tab (one column per doc type, headed
+   * "Rejection Reason - <type>") — see masterSheet.ts
+   * `readRejectionReasonRefSheet`. NOT read off the master sheet's own
+   * Rejection Reason column: that column is shared by every document type,
+   * so its data-validation rule (if any) is necessarily one flat list and
+   * structurally can't vary by row/doc-type. */
+  rejectionReasonsByDocType?: Record<string, string[]> | null
   fraudReasons?: string[] | null
   reclassifyOptions?: string[] | null
 }
 
-/** Combine a live read of the sheet's own data-validation rules with the
- * hardcoded fallback above.
+/** Combine a live read of the sheet's own data-validation rules (and, for
+ * Rejection Reason specifically, the "Ref" tab — see masterSheet.ts) with
+ * the hardcoded fallback above.
  *
- * IMPORTANT, and previously wrong here: when a live rejection-reasons list
- * IS read, it is used AS-IS — the same full list for every document type
- * — not intersected against the hardcoded per-doc-type breakdown. An
- * earlier version of this function did intersect the two ("only offer a
- * reason that's both relevant to this doc type per my guess AND in the
- * live list"), which sounds like a reasonable safety cross-check but
- * actually does the opposite of what was asked: any reason the live sheet
- * has that isn't already in the hardcoded list gets silently dropped, so
- * the dropdown looked "live" but was quietly capped at whatever this file
- * already knew about — exactly the "still don't see the complete list"
- * symptom. The sheet's column has no per-doc-type grouping to preserve in
- * the first place, so mirroring it verbatim (per the explicit ask to
- * "always use the existing dropdown... to populate the dropdown") is both
- * the correct behavior and the simpler one. The hardcoded per-doc-type
- * breakdown is now used ONLY as the fallback when live reading fails
- * entirely for that field. */
+ * Rejection Reason is merged per document type, independently: a doc
+ * type whose Ref-tab column came back with values uses that list as-is;
+ * one that's missing or empty falls back to the hardcoded list for just
+ * that type. This also means a doc type the Ref tab has a column for but
+ * this file doesn't know about (a new document type added later) still
+ * comes through — the merged set of document types is the union of both,
+ * not just the fallback's four. */
 export function mergeTaxonomy(live: LiveTaxonomyRead): Taxonomy {
+  const liveByDocType = live.rejectionReasonsByDocType
+  const docTypes = new Set([...Object.keys(FALLBACK_TAXONOMY.rejectionReasonsByDocType), ...Object.keys(liveByDocType ?? {})])
+
   const rejectionReasonsByDocType: Record<string, string[]> = {}
-  for (const docType of Object.keys(FALLBACK_TAXONOMY.rejectionReasonsByDocType)) {
-    rejectionReasonsByDocType[docType] = live.rejectionReasonsFlat?.length ? live.rejectionReasonsFlat : FALLBACK_TAXONOMY.rejectionReasonsByDocType[docType]
+  const rejectionReasonByDocType: Record<string, TaxonomyFieldSource> = {}
+  for (const docType of docTypes) {
+    const liveList = liveByDocType?.[docType]
+    rejectionReasonsByDocType[docType] = liveList?.length ? liveList : (FALLBACK_TAXONOMY.rejectionReasonsByDocType[docType] ?? [])
+    rejectionReasonByDocType[docType] = liveList?.length ? 'sheet' : 'fallback'
   }
 
   return {
@@ -164,7 +170,7 @@ export function mergeTaxonomy(live: LiveTaxonomyRead): Taxonomy {
     reclassifyOptions: live.reclassifyOptions?.length ? live.reclassifyOptions : FALLBACK_TAXONOMY.reclassifyOptions,
     source: {
       category: live.category?.length ? 'sheet' : 'fallback',
-      rejectionReason: live.rejectionReasonsFlat?.length ? 'sheet' : 'fallback',
+      rejectionReasonByDocType,
       fraudReasons: live.fraudReasons?.length ? 'sheet' : 'fallback',
       reclassifyOptions: live.reclassifyOptions?.length ? 'sheet' : 'fallback',
     },

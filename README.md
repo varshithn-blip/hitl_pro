@@ -83,13 +83,31 @@ real and clickable — only the data source is fake.
   corrections and the decision back — in demo mode to local state, in
   live mode as two Sheets API batch writes (OCR tab, then the master
   row) — then advances to the next queued document.
-- **Dropdown sources** — Category / Rejection Reason / Fraud Reason /
-  Reclassify options are read from the master sheet's own data-validation
-  rules at runtime (`lib/masterSheet.ts` → `readLiveTaxonomy`), so the
-  taxonomy can be changed later without redeploying the app, per the
-  explicit request. `lib/taxonomy.ts`'s `FALLBACK_TAXONOMY` (the exact
-  lists provided during discovery) is only a fallback for when a rule
-  can't be read.
+- **Dropdown sources** — Category / Fraud Reason / Reclassify options are
+  read from the master sheet's own data-validation rules at runtime
+  (`lib/masterSheet.ts` → `readLiveTaxonomy`), so the taxonomy can be
+  changed later without redeploying the app, per the explicit request.
+  Rejection Reason is different: the master sheet has one shared
+  "Rejection Reason" column for every document type, so that column's own
+  dropdown rule can only ever be a single flat list — it structurally
+  cannot vary loan vs. payslip vs. credit vs. coe. The actual per-doc-type
+  breakdown is read from a dedicated **"Ref" tab** in the same
+  spreadsheet (one column per document type, headed
+  `Rejection Reason - <type>`) — see `readRejectionReasonRefRows` /
+  `readRejectionReasonRefSheet` in `lib/masterSheet.ts`. Column order and
+  count on that tab aren't assumed; each header is parsed for its trailing
+  "- <type>" to know which document type it belongs to. `lib/taxonomy.ts`'s
+  `FALLBACK_TAXONOMY` (the exact lists provided during discovery) is only
+  a fallback for when a rule — or the Ref tab, or one of its columns —
+  can't be read, tracked **per document type independently** (see
+  `Taxonomy.source.rejectionReasonByDocType`), not as one blended flag.
+- **Date filter tabs** — only tabs named like `dd-mm-yyyy` (e.g.
+  `03-09-2026`) are treated as a day's queue (`lib/masterSheet.ts` →
+  `isDateTabTitle`). Other tabs living in the same spreadsheet for other
+  purposes (the "Ref" lookup above, a "Reviewers" notes tab, ...) are
+  filtered out of the Date dropdown and can't accidentally become the
+  "most recent tab" the app defaults to or samples Category/Fraud
+  Reason/Reclassify's data-validation from.
 
 ## What "protected" means here — and what's still just a display problem in Sheets
 
@@ -140,30 +158,45 @@ verification pass, not as proven:
   `imageLoadError` in the UI will say so explicitly if that happens.
 - **Data-validation reads** (`readLiveTaxonomy`) — the rejection-reason
   dropdown still looked incomplete after adding `ONE_OF_RANGE` support
-  (previous entry below). Found the actual cause: `mergeTaxonomy` was
-  *intersecting* the live list against the hardcoded per-doc-type fallback
-  ("only offer a reason that's both relevant to this doc type per our
-  guess AND present in the live list") — meaning any reason the real
-  sheet had that wasn't already in the hardcoded list got silently
-  dropped, so the dropdown looked live but was quietly capped. Fixed: a
-  successfully-read live list is now used as-is, unfiltered, for every
-  document type (the sheet's Rejection Reason column is one shared
-  column across all rows anyway, so there was never a real per-doc-type
-  breakdown to preserve from the live side). The hardcoded breakdown is
-  now used only when live reading fails entirely for that field.
+  (previous entry below). First found and fixed one real cause:
+  `mergeTaxonomy` was *intersecting* the live list against the hardcoded
+  per-doc-type fallback ("only offer a reason that's both relevant to
+  this doc type per our guess AND present in the live list") — meaning
+  any reason the real sheet had that wasn't already in the hardcoded list
+  got silently dropped. That fix used the live list as-is, unfiltered —
+  but for *every* document type at once, because the master sheet's
+  Rejection Reason column is one shared column across all rows: its own
+  data-validation rule (if any) is necessarily a single flat list and
+  structurally cannot vary loan vs. payslip vs. credit vs. coe. That's
+  what surfaced next: a payslip document showing loan-only reasons like
+  "EMI Amount Missing" in its dropdown, because "unfiltered" still meant
+  "the same list for everyone."
 
-  **This is now self-diagnosing in the UI**, not something to take on
-  faith: `Taxonomy.source` is tracked per field (Rejection Reason, Fraud
-  Reason, Reclassify), and the Decision panel shows a small badge next to
-  each — "From sheet" or "Fallback list" — with a tooltip naming the
-  option count. If it says "Fallback list" for Rejection Reason, the live
-  read is failing for that specific column and that's the thing to
-  chase (worth checking: does the validation rule's range live on a
-  *different* sheet the signed-in account can't read, or is the rule
-  simply not attached to the sample rows `readLiveTaxonomy` checks).
-  Also bumped how many rows it samples (5 -> 25) so an early run of blank
-  cells on a fresh date-tab doesn't look like "no rule" when there is
-  one.
+  **Actually fixed** by reading the per-doc-type breakdown from a
+  different place entirely: a dedicated **"Ref" tab**, added to the
+  master spreadsheet by hand, with one column per document type headed
+  `Rejection Reason - <type>` (`readRejectionReasonRefRows` /
+  `readRejectionReasonRefSheet` in `lib/masterSheet.ts` — the parsing
+  half is pure and covered by `npm run verify:parser` against the real
+  Ref tab's content, including its jagged/truncated row shapes). The
+  master sheet's own Rejection Reason column validation rule is no longer
+  read for this field at all — it was never capable of encoding a
+  per-doc-type list in the first place, unfiltered or not.
+
+  **This is self-diagnosing in the UI**, not something to take on faith:
+  `Taxonomy.source` is tracked per field (Category, Fraud Reason,
+  Reclassify), and **per document type** for Rejection Reason
+  specifically (`source.rejectionReasonByDocType`) — since each type's
+  list now comes from its own Ref-tab column independently, one type's
+  column can be live while another's is missing or empty. The Decision
+  panel shows a small badge next to each field — "From sheet" or
+  "Fallback list" — with a tooltip naming the option count. If Rejection
+  Reason says "Fallback list" for a given document type, that type's
+  column on the Ref tab is either missing, empty, or the tab isn't named
+  exactly "Ref" — that's the thing to check. Also bumped how many rows
+  `readLiveTaxonomy` samples for Category/Fraud Reason/Reclassify (5 ->
+  25) so an early run of blank cells on a fresh date-tab doesn't look
+  like "no rule" when there is one.
 - ~~`extractValidationList` only handled `ONE_OF_LIST`~~ — also resolves
   `ONE_OF_RANGE` (options pulled from a range elsewhere in the
   spreadsheet, a very common way to back a shared dropdown).

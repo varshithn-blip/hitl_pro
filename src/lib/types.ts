@@ -117,7 +117,11 @@ export interface Taxonomy {
    * in the Decision panel) rather than one overall guess. */
   source: {
     category: TaxonomyFieldSource
-    rejectionReason: TaxonomyFieldSource
+    /** Per document type, not one blended flag for the whole field — each
+     * type's list comes from its own column on the Ref tab independently,
+     * so e.g. payslip/credit/loan could be live while coe's column is
+     * missing or empty and falls back. */
+    rejectionReasonByDocType: Record<string, TaxonomyFieldSource>
     fraudReasons: TaxonomyFieldSource
     reclassifyOptions: TaxonomyFieldSource
   }

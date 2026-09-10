@@ -7,6 +7,7 @@
 // of thing worth re-checking by hand against real sheet data once it's
 // available. Run with `npm run verify:parser`.
 import { buildFieldEdits, forceTextIfDateOrNumeric } from '../src/lib/ocrParser'
+import { parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
 import type { OcrSection } from '../src/lib/types'
 
@@ -89,6 +90,75 @@ console.log('\n=== buildFieldEdits (edit-one-field-only scenario) ===')
   console.log(`  (for reference, all fields written this submit: ${[...editedLabels].join(', ')})`)
   if (fail > 0) {
     console.log(`\n${fail} buildFieldEdits case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// Sanity check for parseRejectionReasonRefRows against the real content of
+// the master spreadsheet's own "Ref" tab (fetched directly via the Drive
+// API during this build pass) — including the row-truncation shape
+// Sheets' values.get actually returns: trailing blank cells are dropped
+// per row, but a leading blank followed by a later non-blank cell in that
+// same row is kept (see the last row below, which has nothing in the
+// payslip column).
+console.log('\n=== parseRejectionReasonRefRows (real "Ref" tab content) ===')
+{
+  const refRows: string[][] = [
+    ['Rejection Reason - payslip', 'Rejection Reason - credit', 'Rejection Reason - coe', 'Rejection Reason - loan'],
+    ['Irrelevant Documents/Images', 'Irrelevant Documents/Images', 'Irrelevant Documents/Images', 'Irrelevant Documents/Images'],
+    ['Unreadable Document', 'Unreadable Document', 'Unreadable Document', 'Unreadable Document'],
+    ['Cropped/Partial Document', 'Cropped/Partial Document', 'Cropped/Partial Document', 'Cropped/Partial Document'],
+    ['Outdated Document', 'Outdated Document', 'Outdated Document', 'Outdated Document'],
+    ['Future Date', 'Future Date', 'Future Date', 'Future Date'],
+    ['Password locked / Access Denied', 'Password locked / Access Denied', 'Password locked / Access Denied', 'Password locked / Access Denied'],
+    ['Missing Issue Date', 'Bank Name is Missing', 'Employee Name Missing', 'Bank / Lender Name Missing'],
+    ['Employee Name Missing', 'Statement Date Missing', 'Employer Name Missing', 'Loan Statement is Missing'],
+    ['Employer Name Missing', 'Total Amount Due Missing', 'Total Salary Amount Missing', 'Loan Amount Missing'],
+    ['Gross Salary Missing', 'Outstanding Balance Missing', 'Total Salary Frequency Missing', 'Interest Rate Missing'],
+    ['Net Salary Missing', 'Due Date Missing', 'Missing Issue Date', 'Loan Tenor Missing'],
+    ['Duration <= 0', 'Customer Name Missing', 'Salary = 0', 'EMI Amount Missing'],
+    ['Duration >= 367', 'Customer Address Missing', 'Missing Salary', 'Outstanding Balance Missing'],
+    ['Duration Missing', 'Credit Limit Value < 0', 'Employment start date missing'],
+    ['Gross Pay / Net Pay < 0', 'Credit Limit Value Missing'],
+    ['Basic/Regular Pay Missing', 'Transaction History Missing'],
+    ['', 'Account Number Missing'],
+  ]
+
+  const result = parseRejectionReasonRefRows(refRows)
+  let fail = 0
+
+  const expectCounts: Record<string, number> = { payslip: 16, credit: 17, coe: 14, loan: 13 }
+  for (const [docType, expected] of Object.entries(expectCounts)) {
+    const actual = result?.[docType]?.length ?? 0
+    const ok = actual === expected
+    if (!ok) fail++
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} "${docType}" -> ${actual} reasons (expected ${expected})`)
+  }
+
+  // The exact bug this guards against: one doc type's list leaking into
+  // another's (e.g. loan's "EMI Amount Missing" showing up for payslip).
+  const leakChecks: [docType: string, mustNotContain: string][] = [
+    ['payslip', 'EMI Amount Missing'], // loan-only
+    ['payslip', 'Credit Limit Value Missing'], // credit-only
+    ['loan', 'Net Salary Missing'], // payslip-only
+    ['coe', 'Account Number Missing'], // credit-only
+  ]
+  for (const [docType, mustNotContain] of leakChecks) {
+    const leaked = result?.[docType]?.includes(mustNotContain) ?? false
+    const ok = !leaked
+    if (!ok) fail++
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} "${docType}" does not contain "${mustNotContain}" (cross-doc-type leak check)`)
+  }
+
+  // The last row's blank payslip cell must not show up as an empty-string
+  // "reason" (the Sheets row-truncation edge case).
+  const payslipHasBlank = result?.payslip?.includes('') ?? false
+  const blankOk = !payslipHasBlank
+  if (!blankOk) fail++
+  console.log(`  ${blankOk ? 'ok  ' : 'FAIL'} "payslip" has no blank-string entries (row-truncation edge case)`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} parseRejectionReasonRefRows case(s) failed.`)
     process.exitCode = 1
   }
 }
