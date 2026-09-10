@@ -183,7 +183,11 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     sheetUrl: linkCell('mock-sheet-1'),
     category: '',
     rejectionReason: '',
-    status: '',
+    // The real prod sheet pre-fills Status with "In Progress" rather than
+    // leaving it blank on an unreviewed row (see isPendingStatus) — one
+    // fixture uses that exact convention so demo mode exercises it too,
+    // instead of only ever testing the plain-blank case.
+    status: 'In Progress',
     fraudReason: [],
     reviewer: 'Juan Dela Cruz',
     apiCalled: 'Done',

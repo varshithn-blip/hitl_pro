@@ -7,14 +7,19 @@ import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy
 import { buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getValues, listTabs } from '../lib/sheetsApi'
 import { mergeTaxonomy } from '../lib/taxonomy'
-import type { CategoryValue, DecisionDraft, MasterRow, OcrDocument, OcrSection, QueueFilters, Taxonomy } from '../lib/types'
+import { isPendingStatus, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
 const EMPTY_DRAFT: DecisionDraft = { category: '', status: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
 
 function seedDraft(row: MasterRow): DecisionDraft {
   return {
     category: row.category,
-    status: row.status,
+    // A not-yet-decided row reads back as "In Progress" (the sheet's own
+    // pre-review default, see isPendingStatus), not blank — normalize
+    // that to '' here so the draft's own "has a decision been made?"
+    // checks (Approve/Reject button highlighting, submit gating) don't
+    // mistake the sheet's placeholder for an actual reviewer decision.
+    status: isPendingStatus(row.status) ? '' : row.status,
     rejectionReason: row.rejectionReason,
     fraudReason: row.fraudReason,
     reclassified: row.reclassified,
@@ -161,7 +166,7 @@ export function usePortal() {
   const filteredRows = useMemo(() => {
     return masterRows.filter((row) => {
       if (filters.reviewer !== 'All' && row.reviewer !== filters.reviewer) return false
-      if (filters.status === 'Pending' && row.status !== '') return false
+      if (filters.status === 'Pending' && !isPendingStatus(row.status)) return false
       if (filters.status !== 'All' && filters.status !== 'Pending' && row.status !== filters.status) return false
       if (filters.apiCalled === 'done' && row.apiCalled !== 'Done') return false
       if (filters.apiCalled === 'not_done' && row.apiCalled === 'Done') return false
@@ -171,7 +176,7 @@ export function usePortal() {
   }, [masterRows, filters, search])
 
   const reviewers = useMemo(() => Array.from(new Set(masterRows.map((r) => r.reviewer).filter(Boolean))).sort(), [masterRows])
-  const pendingCount = useMemo(() => masterRows.filter((r) => r.status === '').length, [masterRows])
+  const pendingCount = useMemo(() => masterRows.filter((r) => isPendingStatus(r.status)).length, [masterRows])
 
   // Default selection: first row of the filtered queue, whenever nothing
   // (or a since-filtered-out row) is selected.

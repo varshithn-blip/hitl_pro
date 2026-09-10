@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { avatarColor, docTypeBadge, reviewerInitials, statusDotColor } from '../lib/presentation'
-import type { MasterRow } from '../lib/types'
+import { isPendingStatus, type MasterRow } from '../lib/types'
 import { ChevronLeft, ChevronRight } from './icons'
 
 interface Props {
@@ -14,7 +14,7 @@ const COLLAPSED_WIDTH = 44
 
 export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState(false)
-  const pendingCount = rows.filter((r) => r.status === '').length
+  const pendingCount = rows.filter((r) => isPendingStatus(r.status)).length
 
   if (collapsed) {
     return (
@@ -139,7 +139,7 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
 
         {rows.map((row) => {
           const selected = row.requestId === selectedRequestId
-          const isDone = row.status !== ''
+          const isDone = !isPendingStatus(row.status)
           const badge = docTypeBadge(row.documentType)
           const avatar = avatarColor(row.reviewer)
           const statusLabel = row.status === 'Manually Approved' ? 'Approved' : row.status === 'Manually Rejected' ? 'Rejected' : 'Pending'

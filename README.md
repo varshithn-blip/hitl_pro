@@ -231,6 +231,21 @@ verification pass, not as proven:
   control for Approve/Reject) — not one derived from the other. A Valid
   document can still be Rejected. Rejection Reason is gated on
   Decision=Reject, not on Category.
+- ~~"Pending" means a blank Status cell~~ — **wrong, found via the "Pending
+  review" filter matching nothing against the real prod sheet.** The
+  assumption (from the original discovery pass, before there was a live
+  sheet to check) was that an unreviewed row's Status cell is empty. The
+  real sheet instead pre-fills it with the literal text `"In Progress"`.
+  `types.ts` → `isPendingStatus()` is now the one place that decides
+  "has this row been decided yet?" (true for `"In Progress"` *or* a
+  genuinely blank cell) — the queue filter, the pending count, and the
+  queue's grey-out styling all call it instead of comparing to `''`
+  directly, so they can't drift out of sync with each other again the way
+  this bug happened. `usePortal.ts` → `seedDraft` also normalizes
+  `"In Progress"` to `''` when seeding the Decision panel's draft, so the
+  sheet's placeholder text is never mistaken for an actual Approve/Reject
+  choice a reviewer made (which would otherwise have let Submit fire
+  without the reviewer ever picking one).
 - **Auth** uses Google Identity Services' implicit token-client flow —
   no refresh token, so a session needs re-auth after the access token
   expires (~1 hour). Fine for a first pass; a longer-lived session would

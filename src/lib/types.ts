@@ -4,7 +4,25 @@
 // notes this was built from.
 
 export type CategoryValue = 'Valid' | 'Invalid' | 'Incomplete'
-export type StatusValue = 'Manually Approved' | 'Manually Rejected'
+/** The two decisions a reviewer can actually make, plus the sheet's own
+ * pre-review default. Originally assumed the Status column started out
+ * *blank* on an unreviewed row — the real prod sheet instead pre-fills it
+ * with the literal text "In Progress" (found via a live filtering bug: the
+ * "Pending" filter matched on an empty string and so matched nothing).
+ * `'In Progress'` is never something a reviewer picks — the Decision
+ * panel's Approve/Reject buttons only ever write the other two — it only
+ * shows up when *reading* a row that hasn't been decided yet. */
+export type StatusValue = 'In Progress' | 'Manually Approved' | 'Manually Rejected'
+
+/** Whether a row's Status cell means "nobody has decided this yet" — true
+ * both for the real sheet's "In Progress" default and for a genuinely
+ * blank cell (kept as pending too, in case an older tab or edge case
+ * still has one). Single source of truth for every "is this done?" check
+ * in the app (the queue filter, the pending count, the grey-out styling)
+ * so they can't drift out of sync with each other again. */
+export function isPendingStatus(status: StatusValue | ''): boolean {
+  return status === '' || status === 'In Progress'
+}
 
 /** A rendered link-chip cell (Image URL / Drive Link / Sheet URL). The
  * display text is always readable from the sheet; the real `href` requires
