@@ -80,7 +80,7 @@ const REVIEWER_EDITABLE_COLUMNS: MasterColumn[] = ['Category', 'Rejection Reason
  * theory be scoped to a sub-range rather than the whole column. */
 export async function readLiveTaxonomy(spreadsheetId: string, tabTitle: string, accessToken: string): Promise<LiveTaxonomyRead> {
   const quotedTab = `'${tabTitle.replace(/'/g, "''")}'`
-  const sampleRows = 6 // header + 5 data rows
+  const sampleRows = 26 // header + 25 data rows — a little deep on purpose, so an early run of rows that happen to be all-blank on a given column doesn't look like "no rule" when there is one
   const grid = await getGridData(spreadsheetId, `${quotedTab}!A1:P${sampleRows}`, accessToken)
   const dataRows = grid.slice(1) // drop header
 

@@ -147,6 +147,34 @@ export function parseOcrRows(rows: string[][]): Omit<OcrDocument, 'spreadsheetId
 
 /** Build the write-back cell updates for edits to a fields-section
  * (label -> new value) and/or a table-section (rowIndex -> new cells). */
+// The OCR sheets' own date formatting is inconsistent at the source
+// (mm/dd/yyyy in some fields, and — per the user — any day value over 12
+// isn't a valid month, so Sheets can't parse it as a date at all and
+// silently turns the cell into a raw serial number instead, corrupting
+// it). None of that is something this app produced or can retroactively
+// repair by guessing which convention a given ambiguous value used (a
+// value like "07/09/2026" is genuinely ambiguous between 7-Sep and
+// 9-Jul with no way to tell from the string alone).
+//
+// What IS fixable here: writes THIS app makes going forward. Sheets API
+// writes use valueInputOption=USER_ENTERED (see sheetsApi.ts), which is
+// the mode where a leading `'` forces a cell to plain text — exactly like
+// typing `'17/07/2026` into the Sheets UI — the apostrophe itself never
+// appears in the stored/displayed value, it just stops Sheets from trying
+// to auto-parse (and potentially mangle) the value as a date or number.
+// Applying that to every date-shaped or number-shaped value this app
+// writes means anything a reviewer corrects and submits is permanently
+// protected from this corruption, regardless of which day/month a date
+// value uses.
+const DATE_LIKE = /^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/
+const NUMERIC_LIKE = /^-?\d[\d,]*(\.\d+)?$/
+
+export function forceTextIfDateOrNumeric(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith("'")) return value
+  return DATE_LIKE.test(trimmed) || NUMERIC_LIKE.test(trimmed) ? `'${value}` : value
+}
+
 export function buildOcrCellUpdates(
   tabTitle: string,
   edits: { fieldRowIndex: number; value: string }[],
@@ -155,11 +183,11 @@ export function buildOcrCellUpdates(
   const quotedTab = `'${tabTitle.replace(/'/g, "''")}'`
   const fieldUpdates: CellUpdate[] = edits.map((e) => ({
     range: `${quotedTab}!B${e.fieldRowIndex}`,
-    values: [[e.value]],
+    values: [[forceTextIfDateOrNumeric(e.value)]],
   }))
   const tableUpdates: CellUpdate[] = tableEdits.map((e) => ({
     range: `${quotedTab}!A${e.rowIndex}:${String.fromCharCode(65 + e.cells.length - 1)}${e.rowIndex}`,
-    values: [e.cells],
+    values: [e.cells.map(forceTextIfDateOrNumeric)],
   }))
   return [...fieldUpdates, ...tableUpdates]
 }

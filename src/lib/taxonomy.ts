@@ -109,7 +109,7 @@ export const FALLBACK_TAXONOMY: Taxonomy = {
 
   reclassifyOptions: ['payslip', 'credit', 'loan', 'coe'],
 
-  source: 'fallback',
+  source: { category: 'fallback', rejectionReason: 'fallback', fraudReasons: 'fallback', reclassifyOptions: 'fallback' },
 }
 
 /** Strip a trailing "_<n>" (loan_0, loan_1, payslip_0, ...) to get the base
@@ -126,34 +126,35 @@ export interface LiveTaxonomyRead {
   /** The master sheet has ONE Rejection Reason column shared by every
    * document type, so its data-validation rule (if any) is necessarily a
    * single flat list covering all document types at once — there's no way
-   * for a single column's dropdown to vary by row. We use it as a
-   * cross-check: intersect it with the hardcoded per-doc-type fallback
-   * list so the portal only ever offers a reason that is BOTH relevant to
-   * that document type AND currently valid per the live sheet. */
+   * for a single column's dropdown to vary by row/doc-type. */
   rejectionReasonsFlat?: string[] | null
   fraudReasons?: string[] | null
   reclassifyOptions?: string[] | null
 }
 
 /** Combine a live read of the sheet's own data-validation rules with the
- * hardcoded fallback above. Never returns an empty list for a document
- * type that has fallback entries — if a live list exists but doesn't
- * overlap at all with the fallback for some doc type (e.g. the rule
- * changed shape), that's more likely a bug in this intersection than a
- * real "zero valid reasons" situation, so we fall back to the full
- * hardcoded list for that doc type rather than leave reviewers stuck. */
+ * hardcoded fallback above.
+ *
+ * IMPORTANT, and previously wrong here: when a live rejection-reasons list
+ * IS read, it is used AS-IS — the same full list for every document type
+ * — not intersected against the hardcoded per-doc-type breakdown. An
+ * earlier version of this function did intersect the two ("only offer a
+ * reason that's both relevant to this doc type per my guess AND in the
+ * live list"), which sounds like a reasonable safety cross-check but
+ * actually does the opposite of what was asked: any reason the live sheet
+ * has that isn't already in the hardcoded list gets silently dropped, so
+ * the dropdown looked "live" but was quietly capped at whatever this file
+ * already knew about — exactly the "still don't see the complete list"
+ * symptom. The sheet's column has no per-doc-type grouping to preserve in
+ * the first place, so mirroring it verbatim (per the explicit ask to
+ * "always use the existing dropdown... to populate the dropdown") is both
+ * the correct behavior and the simpler one. The hardcoded per-doc-type
+ * breakdown is now used ONLY as the fallback when live reading fails
+ * entirely for that field. */
 export function mergeTaxonomy(live: LiveTaxonomyRead): Taxonomy {
-  const anyLive = Boolean(live.category?.length || live.rejectionReasonsFlat?.length || live.fraudReasons?.length || live.reclassifyOptions?.length)
-
   const rejectionReasonsByDocType: Record<string, string[]> = {}
-  for (const [docType, fallbackReasons] of Object.entries(FALLBACK_TAXONOMY.rejectionReasonsByDocType)) {
-    if (live.rejectionReasonsFlat?.length) {
-      const liveSet = new Set(live.rejectionReasonsFlat)
-      const intersected = fallbackReasons.filter((r) => liveSet.has(r))
-      rejectionReasonsByDocType[docType] = intersected.length > 0 ? intersected : fallbackReasons
-    } else {
-      rejectionReasonsByDocType[docType] = fallbackReasons
-    }
+  for (const docType of Object.keys(FALLBACK_TAXONOMY.rejectionReasonsByDocType)) {
+    rejectionReasonsByDocType[docType] = live.rejectionReasonsFlat?.length ? live.rejectionReasonsFlat : FALLBACK_TAXONOMY.rejectionReasonsByDocType[docType]
   }
 
   return {
@@ -161,7 +162,12 @@ export function mergeTaxonomy(live: LiveTaxonomyRead): Taxonomy {
     rejectionReasonsByDocType,
     fraudReasons: live.fraudReasons?.length ? live.fraudReasons : FALLBACK_TAXONOMY.fraudReasons,
     reclassifyOptions: live.reclassifyOptions?.length ? live.reclassifyOptions : FALLBACK_TAXONOMY.reclassifyOptions,
-    source: anyLive ? 'sheet' : 'fallback',
+    source: {
+      category: live.category?.length ? 'sheet' : 'fallback',
+      rejectionReason: live.rejectionReasonsFlat?.length ? 'sheet' : 'fallback',
+      fraudReasons: live.fraudReasons?.length ? 'sheet' : 'fallback',
+      reclassifyOptions: live.reclassifyOptions?.length ? 'sheet' : 'fallback',
+    },
   }
 }
 

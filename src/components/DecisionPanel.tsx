@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { baseDocType } from '../lib/taxonomy'
-import type { CategoryValue, DecisionDraft, StatusValue, Taxonomy } from '../lib/types'
+import type { CategoryValue, DecisionDraft, StatusValue, Taxonomy, TaxonomyFieldSource } from '../lib/types'
 import { ArrowRight, Check, ChevronDown, X } from './icons'
 
 interface Props {
@@ -23,6 +23,36 @@ const STATUS_OPTIONS: { value: StatusValue; label: string; color: string; icon: 
   { value: 'Manually Approved', label: 'Approve', color: 'var(--success)', icon: <Check size={14} /> },
   { value: 'Manually Rejected', label: 'Reject', color: 'var(--danger)', icon: <X size={14} /> },
 ]
+
+/** Makes it visible, not just claimed, whether an options list actually
+ * came from the master sheet's own data-validation rule or from the
+ * hardcoded fallback in lib/taxonomy.ts — so "is this really reading the
+ * sheet's dropdown?" is answered by looking at the screen, not by asking. */
+function SourceBadge({ source, count }: { source: TaxonomyFieldSource; count: number }) {
+  const fromSheet = source === 'sheet'
+  return (
+    <span
+      title={
+        fromSheet
+          ? `Read live from the master sheet's dropdown (${count} option${count === 1 ? '' : 's'}).`
+          : "Could not read this dropdown's rule from the sheet — showing the app's built-in fallback list instead, which may be out of date."
+      }
+      style={{
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: '0.03em',
+        textTransform: 'uppercase',
+        padding: '1px 6px',
+        borderRadius: 20,
+        color: fromSheet ? 'var(--success)' : 'var(--warning)',
+        background: fromSheet ? 'var(--success-tint)' : 'var(--warning-tint)',
+        cursor: 'help',
+      }}
+    >
+      {fromSheet ? 'From sheet' : 'Fallback list'}
+    </span>
+  )
+}
 
 const fieldLabelStyle: React.CSSProperties = { fontSize: 10.5, color: 'var(--text-secondary)' }
 const selectBoxStyle: React.CSSProperties = {
@@ -135,7 +165,10 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
 
       {needsReason && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={fieldLabelStyle}>Rejection reason</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={fieldLabelStyle}>Rejection reason</span>
+            <SourceBadge source={taxonomy.source.rejectionReason} count={reasons.length} />
+          </div>
           <select value={draft.rejectionReason} onChange={(e) => onChange({ ...draft, rejectionReason: e.target.value })} style={selectBoxStyle}>
             <option value="">Select a reason…</option>
             {reasons.map((r) => (
@@ -147,10 +180,18 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
         </div>
       )}
 
-      <FraudReasonPicker options={taxonomy.fraudReasons} selected={draft.fraudReason} onChange={(fraudReason) => onChange({ ...draft, fraudReason })} />
+      <FraudReasonPicker
+        options={taxonomy.fraudReasons}
+        selected={draft.fraudReason}
+        onChange={(fraudReason) => onChange({ ...draft, fraudReason })}
+        source={taxonomy.source.fraudReasons}
+      />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <span style={fieldLabelStyle}>Reclassify document type</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={fieldLabelStyle}>Reclassify document type</span>
+          <SourceBadge source={taxonomy.source.reclassifyOptions} count={taxonomy.reclassifyOptions.length} />
+        </div>
         <select value={draft.reclassified} onChange={(e) => onChange({ ...draft, reclassified: e.target.value })} style={selectBoxStyle}>
           <option value="">Keep as {docType}</option>
           {taxonomy.reclassifyOptions
@@ -214,7 +255,17 @@ interface PopoverPosition {
   bottom?: number
 }
 
-function FraudReasonPicker({ options, selected, onChange }: { options: string[]; selected: string[]; onChange: (next: string[]) => void }) {
+function FraudReasonPicker({
+  options,
+  selected,
+  onChange,
+  source,
+}: {
+  options: string[]
+  selected: string[]
+  onChange: (next: string[]) => void
+  source: TaxonomyFieldSource
+}) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState<PopoverPosition | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -276,7 +327,10 @@ function FraudReasonPicker({ options, selected, onChange }: { options: string[];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }} ref={containerRef}>
-      <span style={fieldLabelStyle}>Fraud signals</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={fieldLabelStyle}>Fraud signals</span>
+        <SourceBadge source={source} count={options.length} />
+      </div>
       <button
         ref={triggerRef}
         onClick={() => setOpen((v) => !v)}

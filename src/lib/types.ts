@@ -102,6 +102,8 @@ export interface OcrDocument {
   sections: OcrSection[]
 }
 
+export type TaxonomyFieldSource = 'sheet' | 'fallback'
+
 export interface Taxonomy {
   category: CategoryValue[]
   /** Keyed by *base* document type (loan/payslip/credit/coe — the
@@ -109,9 +111,16 @@ export interface Taxonomy {
   rejectionReasonsByDocType: Record<string, string[]>
   fraudReasons: string[]
   reclassifyOptions: string[]
-  /** True once at least one list above came from the sheet's own data
-   * validation rather than the hardcoded fallback. */
-  source: 'sheet' | 'fallback'
+  /** Per-field, not one blended flag — Category could come from the live
+   * sheet while Rejection Reason falls back, or vice versa, and reviewers
+   * need to know specifically which is which (surfaced next to each field
+   * in the Decision panel) rather than one overall guess. */
+  source: {
+    category: TaxonomyFieldSource
+    rejectionReason: TaxonomyFieldSource
+    fraudReasons: TaxonomyFieldSource
+    reclassifyOptions: TaxonomyFieldSource
+  }
 }
 
 /** The reviewer's in-progress edits to a row's decision fields, before

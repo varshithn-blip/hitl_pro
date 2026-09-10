@@ -62,6 +62,15 @@ real and clickable — only the data source is fake.
   has, including a repeating table (Certificate of Employment's "Salary
   Components"). Field-level remarks the OCR pipeline itself attaches
   (the sheet's optional 3rd column) surface as inline warning badges.
+  Every value this app writes back — not just fields that look like
+  dates — gets a `'` prefix when it's date-shaped or number-shaped
+  (`lib/ocrParser.ts` → `forceTextIfDateOrNumeric`), forcing Sheets to
+  store it as plain text instead of trying to auto-parse it. This is
+  what stops the sheet's own date corruption (a day value over 12 isn't
+  a valid month, so Sheets can't parse it as a date at all and silently
+  turns the cell into a raw serial number) from happening to anything a
+  reviewer corrects and resubmits — see "Known gaps" for what this does
+  and doesn't fix.
 - **Decision panel** — Category (Valid / Invalid / Incomplete), Rejection
   Reason (a flat list per document type — payslip/credit/loan/coe each
   have their own), Fraud Reason (multi-select, independent of Category —
@@ -77,6 +86,21 @@ real and clickable — only the data source is fake.
   explicit request. `lib/taxonomy.ts`'s `FALLBACK_TAXONOMY` (the exact
   lists provided during discovery) is only a fallback for when a rule
   can't be read.
+
+## Deliberately not attempted: reformatting existing ambiguous dates
+
+The `'`-prefix fix above (see "What it does" → OCR editor) protects every
+date/number value this app *writes* from Sheets' auto-parsing, going
+forward. It does not, and safely can't, reformat a date value that's
+*already* in the sheet from mm/dd/yyyy to dd/mm/yyyy: a value like
+"07/09/2026" is genuinely ambiguous between 7-Sep and 9-Jul with no way to
+tell which convention produced it from the string alone, so guessing risks
+silently swapping day and month on dates that were actually already
+correct. The practical mitigation is manual, not automatic: a reviewer who
+opens a document sees the source image next to the OCR value, so they can
+tell at a glance whether a date needs correcting, fix it once, and from
+then on it's permanently protected from the corruption bug on every future
+save.
 
 ## Known gaps — unverified against the live Google APIs
 
@@ -111,15 +135,34 @@ verification pass, not as proven:
   the underlying *image file* in Drive (they're separate permissions) —
   `imageLoadError` in the UI will say so explicitly if that happens.
 - **Data-validation reads** (`readLiveTaxonomy`) — the rejection-reason
-  dropdown initially came back incomplete against the live sheet, most
-  likely because the first pass only handled a `ONE_OF_LIST` condition
-  (options typed directly into the rule); `extractValidationList` now
-  also resolves `ONE_OF_RANGE` (options pulled from a range elsewhere in
-  the spreadsheet, a very common way to back a shared dropdown, and the
-  likely actual case here). Worth a re-check now that this is in — if the
-  dropdown is still short, the range this resolves to isn't the one
-  driving the visible dropdown, which would need eyes on the sheet's
-  actual validation rule to pin down further.
+  dropdown still looked incomplete after adding `ONE_OF_RANGE` support
+  (previous entry below). Found the actual cause: `mergeTaxonomy` was
+  *intersecting* the live list against the hardcoded per-doc-type fallback
+  ("only offer a reason that's both relevant to this doc type per our
+  guess AND present in the live list") — meaning any reason the real
+  sheet had that wasn't already in the hardcoded list got silently
+  dropped, so the dropdown looked live but was quietly capped. Fixed: a
+  successfully-read live list is now used as-is, unfiltered, for every
+  document type (the sheet's Rejection Reason column is one shared
+  column across all rows anyway, so there was never a real per-doc-type
+  breakdown to preserve from the live side). The hardcoded breakdown is
+  now used only when live reading fails entirely for that field.
+
+  **This is now self-diagnosing in the UI**, not something to take on
+  faith: `Taxonomy.source` is tracked per field (Rejection Reason, Fraud
+  Reason, Reclassify), and the Decision panel shows a small badge next to
+  each — "From sheet" or "Fallback list" — with a tooltip naming the
+  option count. If it says "Fallback list" for Rejection Reason, the live
+  read is failing for that specific column and that's the thing to
+  chase (worth checking: does the validation rule's range live on a
+  *different* sheet the signed-in account can't read, or is the rule
+  simply not attached to the sample rows `readLiveTaxonomy` checks).
+  Also bumped how many rows it samples (5 -> 25) so an early run of blank
+  cells on a fresh date-tab doesn't look like "no rule" when there is
+  one.
+- ~~`extractValidationList` only handled `ONE_OF_LIST`~~ — also resolves
+  `ONE_OF_RANGE` (options pulled from a range elsewhere in the
+  spreadsheet, a very common way to back a shared dropdown).
 - **The OCR-tab parser** (`lib/ocrParser.ts`) was verified against
   fixture text pulled directly from the real sheets during discovery
   (`npm run verify:parser` re-runs this check against `lib/mockData.ts`),
