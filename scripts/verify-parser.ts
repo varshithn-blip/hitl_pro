@@ -6,8 +6,9 @@
 // blank-valued field both come back as one-cell rows) is exactly the kind
 // of thing worth re-checking by hand against real sheet data once it's
 // available. Run with `npm run verify:parser`.
-import { forceTextIfDateOrNumeric } from '../src/lib/ocrParser'
+import { buildFieldEdits, forceTextIfDateOrNumeric } from '../src/lib/ocrParser'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
+import type { OcrSection } from '../src/lib/types'
 
 // Sanity check for forceTextIfDateOrNumeric against real values pulled
 // from the actual sheets during discovery (dates, amounts) vs. real
@@ -42,6 +43,54 @@ for (const [value, shouldForce] of FORCE_TEXT_CASES) {
 if (forceTextFailures > 0) {
   console.log(`\n${forceTextFailures} forceTextIfDateOrNumeric case(s) failed.`)
   process.exitCode = 1
+}
+
+// Sanity check for buildFieldEdits: a reviewer edits exactly one
+// plain-text field on a real fixture (loan_0, which has a good mix of
+// dates, amounts, and text) and leaves everything else untouched. Expect:
+// every date/numeric field to be included (protected) even though
+// untouched, the one edited text field to be included, and every other
+// untouched text field to be excluded.
+console.log('\n=== buildFieldEdits (edit-one-field-only scenario) ===')
+{
+  const original = MOCK_OCR_DOCS['ETB-2029-4471::loan_0'].sections
+  const draft = structuredClone(original) as OcrSection[]
+  const fieldsSection = draft.find((s) => s.kind === 'fields' && s.title === 'Loan Details')
+  if (fieldsSection?.kind === 'fields') {
+    const loanType = fieldsSection.fields.find((f) => f.label === 'Loan Type')
+    if (loanType) loanType.value = 'Auto Loan' // the one deliberate edit
+  }
+
+  const edits = buildFieldEdits(original, draft)
+  const editedLabels = new Set(
+    edits.map((e) => {
+      for (const section of original) {
+        if (section.kind === 'fields') {
+          const f = section.fields.find((f) => f.rowIndex === e.fieldRowIndex)
+          if (f) return f.label
+        }
+      }
+      return `row${e.fieldRowIndex}`
+    }),
+  )
+
+  const expectIncluded = ['Loan Type', 'Statement Date', 'Statement Month', 'Statement Year', 'Avail Date', 'Total Loan Amount', 'EMI Amount', 'Outstanding Balance']
+  let fail = 0
+  for (const label of expectIncluded) {
+    const ok = editedLabels.has(label)
+    if (!ok) fail++
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} "${label}" included (protected/edited) - expected yes, got ${ok}`)
+  }
+  for (const label of ['Customer Name', 'Customer Address', 'Bank Name']) {
+    const ok = !editedLabels.has(label)
+    if (!ok) fail++
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} "${label}" excluded (untouched, non-date/number) - expected yes, got ${ok}`)
+  }
+  console.log(`  (for reference, all fields written this submit: ${[...editedLabels].join(', ')})`)
+  if (fail > 0) {
+    console.log(`\n${fail} buildFieldEdits case(s) failed.`)
+    process.exitCode = 1
+  }
 }
 
 for (const [key, doc] of Object.entries(MOCK_OCR_DOCS)) {

@@ -4,7 +4,7 @@ import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, readLiveTaxonomy, parseMasterRows, parseSheetUrlHref } from '../lib/masterSheet'
-import { buildOcrCellUpdates, parseOcrRows } from '../lib/ocrParser'
+import { buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getGridData, getValues, listTabs } from '../lib/sheetsApi'
 import { mergeTaxonomy } from '../lib/taxonomy'
 import type { CategoryValue, DecisionDraft, MasterRow, OcrDocument, OcrSection, QueueFilters, Taxonomy } from '../lib/types'
@@ -322,24 +322,8 @@ export function usePortal() {
         await batchUpdateValues(CONFIG.masterSheetId, masterUpdates, user.accessToken)
 
         if (currentDoc && draftSections) {
-          const fieldEdits: { fieldRowIndex: number; value: string }[] = []
-          currentDoc.sections.forEach((original, sIdx) => {
-            const draft = draftSections[sIdx]
-            if (original.kind === 'fields' && draft?.kind === 'fields') {
-              original.fields.forEach((f, fIdx) => {
-                const newValue = draft.fields[fIdx]?.value
-                if (newValue !== undefined && newValue !== f.value) fieldEdits.push({ fieldRowIndex: f.rowIndex, value: newValue })
-              })
-            }
-          })
-          const tableEdits: { rowIndex: number; cells: string[] }[] = []
-          draftSections.forEach((section) => {
-            if (section.kind === 'table') {
-              section.rows.forEach((r) => {
-                if (r.rowIndex > 0) tableEdits.push({ rowIndex: r.rowIndex, cells: r.cells }) // new rows (rowIndex <= 0) aren't written back yet — see README
-              })
-            }
-          })
+          const fieldEdits = buildFieldEdits(currentDoc.sections, draftSections)
+          const tableEdits = buildTableEdits(draftSections)
           const ocrUpdates = buildOcrCellUpdates(currentDoc.tabTitle, fieldEdits, tableEdits)
           if (ocrUpdates.length > 0) await batchUpdateValues(currentDoc.spreadsheetId, ocrUpdates, user.accessToken)
         }

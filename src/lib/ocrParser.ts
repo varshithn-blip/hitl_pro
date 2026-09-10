@@ -145,34 +145,81 @@ export function parseOcrRows(rows: string[][]): Omit<OcrDocument, 'spreadsheetId
   return { transactionId, customerId, error, sections }
 }
 
-/** Build the write-back cell updates for edits to a fields-section
- * (label -> new value) and/or a table-section (rowIndex -> new cells). */
 // The OCR sheets' own date formatting is inconsistent at the source
-// (mm/dd/yyyy in some fields, and — per the user — any day value over 12
-// isn't a valid month, so Sheets can't parse it as a date at all and
-// silently turns the cell into a raw serial number instead, corrupting
-// it). None of that is something this app produced or can retroactively
-// repair by guessing which convention a given ambiguous value used (a
-// value like "07/09/2026" is genuinely ambiguous between 7-Sep and
-// 9-Jul with no way to tell from the string alone).
+// (mm/dd/yyyy in some fields, and any day value over 12 isn't a valid
+// month, so Sheets can't parse it as a date at all and silently turns the
+// cell into a raw serial number instead, corrupting it). Per the user, an
+// OCR date value the reviewer never touched is already correct in
+// dd/mm/yyyy at the source — Sheets' own display/parsing is what's wrong,
+// not the underlying data — so this isn't something reviewers should have
+// to manually re-key field by field just to protect it.
 //
-// What IS fixable here: writes THIS app makes going forward. Sheets API
+// The fix: every date-shaped or number-shaped value this app writes gets
+// a leading `'`, and — per that same instruction — this applies whether
+// the reviewer edited the field or not, on every submit. Sheets API
 // writes use valueInputOption=USER_ENTERED (see sheetsApi.ts), which is
 // the mode where a leading `'` forces a cell to plain text — exactly like
 // typing `'17/07/2026` into the Sheets UI — the apostrophe itself never
-// appears in the stored/displayed value, it just stops Sheets from trying
-// to auto-parse (and potentially mangle) the value as a date or number.
-// Applying that to every date-shaped or number-shaped value this app
-// writes means anything a reviewer corrects and submits is permanently
-// protected from this corruption, regardless of which day/month a date
-// value uses.
+// appears in the stored/displayed value, it just stops Sheets from ever
+// trying to auto-parse (and potentially mangle) the value.
 const DATE_LIKE = /^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/
 const NUMERIC_LIKE = /^-?\d[\d,]*(\.\d+)?$/
 
-export function forceTextIfDateOrNumeric(value: string): string {
+/** Whether this value should be force-written as text — used both to
+ * decide the `'` prefix here and, in usePortal.ts's submit, to decide
+ * which UNCHANGED fields still need rewriting for protection. */
+export function isDateOrNumericLike(value: string): boolean {
   const trimmed = value.trim()
-  if (!trimmed || trimmed.startsWith("'")) return value
-  return DATE_LIKE.test(trimmed) || NUMERIC_LIKE.test(trimmed) ? `'${value}` : value
+  if (!trimmed) return false
+  return DATE_LIKE.test(trimmed) || NUMERIC_LIKE.test(trimmed)
+}
+
+export function forceTextIfDateOrNumeric(value: string): string {
+  if (!value.trim() || value.trim().startsWith("'")) return value
+  return isDateOrNumericLike(value) ? `'${value}` : value
+}
+
+/** Build the write-back cell updates for edits to a fields-section
+ * (label -> new value) and/or a table-section (rowIndex -> new cells). */
+
+/** Diffs a fields-section's original values against the reviewer's draft
+ * to decide which cells need rewriting: any field the reviewer actually
+ * changed, PLUS any date/numeric-shaped field even when untouched (see
+ * the comment above `isDateOrNumericLike` — protecting those doesn't wait
+ * on a reviewer happening to open that specific field). A plain-text
+ * field that wasn't touched is left alone, so a submit doesn't rewrite
+ * the whole document's worth of cells every time. */
+export function buildFieldEdits(originalSections: OcrSection[], draftSections: OcrSection[]): { fieldRowIndex: number; value: string }[] {
+  const edits: { fieldRowIndex: number; value: string }[] = []
+  originalSections.forEach((original, sIdx) => {
+    const draft = draftSections[sIdx]
+    if (original.kind !== 'fields' || draft?.kind !== 'fields') return
+    original.fields.forEach((f, fIdx) => {
+      const newValue = draft.fields[fIdx]?.value
+      if (newValue === undefined) return
+      if (newValue !== f.value || isDateOrNumericLike(newValue)) edits.push({ fieldRowIndex: f.rowIndex, value: newValue })
+    })
+  })
+  return edits
+}
+
+/** Every existing (already-in-the-sheet) table row from the draft, ready
+ * to rewrite — table sections aren't diffed cell-by-cell like fields are,
+ * since a row is a single write anyway; this also means a numeric cell
+ * (e.g. Salary Components' Amount) gets the same always-protected
+ * treatment as date/numeric fixed fields do, without needing a separate
+ * check here. New rows the reviewer added this session (`rowIndex <= 0`)
+ * aren't included — see README's "newly-added rows aren't written back
+ * yet" note. */
+export function buildTableEdits(draftSections: OcrSection[]): { rowIndex: number; cells: string[] }[] {
+  const edits: { rowIndex: number; cells: string[] }[] = []
+  draftSections.forEach((section) => {
+    if (section.kind !== 'table') return
+    section.rows.forEach((r) => {
+      if (r.rowIndex > 0) edits.push({ rowIndex: r.rowIndex, cells: r.cells })
+    })
+  })
+  return edits
 }
 
 export function buildOcrCellUpdates(

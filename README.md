@@ -62,15 +62,19 @@ real and clickable — only the data source is fake.
   has, including a repeating table (Certificate of Employment's "Salary
   Components"). Field-level remarks the OCR pipeline itself attaches
   (the sheet's optional 3rd column) surface as inline warning badges.
-  Every value this app writes back — not just fields that look like
-  dates — gets a `'` prefix when it's date-shaped or number-shaped
-  (`lib/ocrParser.ts` → `forceTextIfDateOrNumeric`), forcing Sheets to
-  store it as plain text instead of trying to auto-parse it. This is
-  what stops the sheet's own date corruption (a day value over 12 isn't
-  a valid month, so Sheets can't parse it as a date at all and silently
-  turns the cell into a raw serial number) from happening to anything a
-  reviewer corrects and resubmits — see "Known gaps" for what this does
-  and doesn't fix.
+  Every date-shaped or number-shaped OCR value gets written with a
+  leading `'` (`lib/ocrParser.ts` → `forceTextIfDateOrNumeric`), forcing
+  Sheets to store it as plain text instead of trying to auto-parse it —
+  and, per explicit direction, this is **not** limited to fields the
+  reviewer actually edited: `buildFieldEdits` force-(re)writes every
+  date/numeric field on every submit, touched or not (an untouched OCR
+  date is already correct at the source — protecting it from Sheets'
+  own auto-parse corruption shouldn't require a reviewer to open and
+  retype every field by hand). Table rows (e.g. Salary Components'
+  Amount) get the same treatment automatically — they're rewritten in
+  full on every submit already. A genuinely untouched plain-text field
+  is left alone, so this doesn't turn every submit into a full-document
+  rewrite.
 - **Decision panel** — Category (Valid / Invalid / Incomplete), Rejection
   Reason (a flat list per document type — payslip/credit/loan/coe each
   have their own), Fraud Reason (multi-select, independent of Category —
@@ -87,20 +91,20 @@ real and clickable — only the data source is fake.
   lists provided during discovery) is only a fallback for when a rule
   can't be read.
 
-## Deliberately not attempted: reformatting existing ambiguous dates
+## What "protected" means here — and what's still just a display problem in Sheets
 
-The `'`-prefix fix above (see "What it does" → OCR editor) protects every
-date/number value this app *writes* from Sheets' auto-parsing, going
-forward. It does not, and safely can't, reformat a date value that's
-*already* in the sheet from mm/dd/yyyy to dd/mm/yyyy: a value like
-"07/09/2026" is genuinely ambiguous between 7-Sep and 9-Jul with no way to
-tell which convention produced it from the string alone, so guessing risks
-silently swapping day and month on dates that were actually already
-correct. The practical mitigation is manual, not automatic: a reviewer who
-opens a document sees the source image next to the OCR value, so they can
-tell at a glance whether a date needs correcting, fix it once, and from
-then on it's permanently protected from the corruption bug on every future
-save.
+The `'`-prefix fix (see "What it does" → OCR editor) writes each
+date/numeric value's digits through **exactly as they already read** in
+the OCR sheet — it doesn't re-derive or swap a day/month order, it just
+stops Sheets from ever trying to auto-parse (and potentially mangle) that
+string. Per explicit direction: an OCR date the reviewer never touched is
+already correct dd/mm/yyyy at the source, so this app takes that as given
+rather than trying to detect or re-interpret which convention a value
+uses — there was never a need to solve that (genuinely ambiguous)
+problem, only to stop Sheets' own auto-parsing from acting on it. Once a
+date/numeric field has been through one submit, its cell holds forced
+plain text and Sheets won't touch it again, in that display convention,
+from then on.
 
 ## Known gaps — unverified against the live Google APIs
 
