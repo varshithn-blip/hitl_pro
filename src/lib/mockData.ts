@@ -1,5 +1,5 @@
 import { parseOcrRows } from './ocrParser'
-import type { MasterRow, OcrDocument } from './types'
+import { masterRowKey, type MasterRow, type OcrDocument } from './types'
 
 // Synthetic demo-mode fixtures. Field STRUCTURE (labels, section grouping,
 // the coe_0 repeating table) mirrors the real OCR sheets pulled during
@@ -80,12 +80,15 @@ const PAYSLIP_0_ROWS: string[][] = [
   row('Net Salary', '40048.66'),
 ]
 
-// Two genuinely different pages of ONE payslip, sharing a Transaction ID
-// with PAYSLIP_0_ROWS above (same reviewer scenario reported live: two
-// queue cards, same Transaction ID, same base doc type, that must stay
-// fully independent — different OCR content, and editing/submitting one
-// must never touch the other's cells). Deliberately different Coverage
-// Period / Basic Pay from payslip_0 so a test can tell them apart.
+// Two genuinely different pages of ONE payslip, sharing BOTH a Transaction
+// ID and (deliberately, matching what was found live) a Request ID with
+// PAYSLIP_0_ROWS/its MasterRow below — the exact scenario reported live:
+// two queue cards that even Request ID can't tell apart, that must still
+// stay fully independent (different OCR content, and editing/submitting
+// one must never touch the other's cells). Only `documentType` differs
+// (payslip_0 vs payslip_1), which is exactly why `masterRowKey` uses it.
+// Deliberately different Coverage Period / Basic Pay from payslip_0 so a
+// test can tell them apart.
 const PAYSLIP_1_ROWS: string[][] = [
   row('HyperVergeTransaction ID', 'NTB-8814-2093'),
   row('Customer ID', 'rgitid'),
@@ -169,8 +172,9 @@ const COE_0_ROWS: string[][] = [
   row('Housing Allowance', '4500', 'Monthly'),
 ]
 
-function toOcrDocument(requestId: string, spreadsheetId: string, tabTitle: string, gid: number, rows: string[][]): OcrDocument {
-  return { requestId, spreadsheetId, tabTitle, gid, ...parseOcrRows(rows) }
+function toOcrDocument(transactionId: string, spreadsheetId: string, tabTitle: string, gid: number, rows: string[][]): OcrDocument {
+  const rowKey = masterRowKey({ transactionId, documentType: tabTitle })
+  return { rowKey, spreadsheetId, tabTitle, gid, ...parseOcrRows(rows) }
 }
 
 /** Demo-mode stand-in for attachFieldValidation (ocrParser.ts) — in live
@@ -195,35 +199,36 @@ function withFieldOptions(doc: OcrDocument, label: string, options: string[]): O
 
 const COMPANY_CATEGORY_OPTIONS = ['Cat A', 'Cat B', 'Cat C', 'No Match']
 
-/** Keyed by Request ID — the same key MasterRow/OcrDocument use everywhere
- * else, deliberately not `${transactionId}::${documentType}` (what this
- * used to be keyed by). That composite key breaks down exactly when it
- * matters most: two rows can share both a Transaction ID and a base doc
- * type (the coe_0 pair below is fine — different types — but
- * `NTB-8814-2093`'s two payslip rows below share transactionId AND
- * documentType; a transactionId+documentType key would collide them onto
- * one entry, exactly the class of bug reported live — see OcrDocument's
- * requestId comment in types.ts). */
+/** Keyed by `masterRowKey` (Transaction ID + Document Type) — NOT Request
+ * ID. Real data has shown Request ID repeating across rows under one
+ * transaction, even across different document types (see OcrDocument's
+ * rowKey comment in types.ts), so it can't be trusted as a lookup key.
+ * Document Type is what's actually distinct within a transaction here:
+ * the coe_0/loan_0 pair below differ by type, and — the case this file
+ * exists to guard against — `NTB-8814-2093`'s two payslip rows below
+ * deliberately share the SAME Request ID (see PAYSLIP_1_ROWS's comment)
+ * and are only told apart by documentType (payslip_0 vs payslip_1). */
 export const MOCK_OCR_DOCS: Record<string, OcrDocument> = {
-  '5f84b481-51f0-4d3a-8dd2-11f54c20db1b': withFieldOptions(
-    toOcrDocument('5f84b481-51f0-4d3a-8dd2-11f54c20db1b', 'mock-sheet-1', 'coe_0', 1001, COE_0_ROWS),
+  'ETB-2029-4471::coe_0': withFieldOptions(
+    toOcrDocument('ETB-2029-4471', 'mock-sheet-1', 'coe_0', 1001, COE_0_ROWS),
     'Company Category',
     COMPANY_CATEGORY_OPTIONS,
   ),
-  'a1b7c9d0-1111-4a2b-9c3d-4e5f60718293': toOcrDocument('a1b7c9d0-1111-4a2b-9c3d-4e5f60718293', 'mock-sheet-1', 'loan_0', 1002, LOAN_0_ROWS),
-  '1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660': withFieldOptions(
-    toOcrDocument('1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660', 'mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
+  'ETB-2029-4471::loan_0': toOcrDocument('ETB-2029-4471', 'mock-sheet-1', 'loan_0', 1002, LOAN_0_ROWS),
+  'NTB-8814-2093::payslip_0': withFieldOptions(
+    toOcrDocument('NTB-8814-2093', 'mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
     'Company Category',
     COMPANY_CATEGORY_OPTIONS,
   ),
   // Second page of the SAME payslip as above — same Transaction ID
-  // (NTB-8814-2093) and same base doc type (payslip), different Request
-  // ID. This is the pairing this file exists to guard against.
-  'd4e5f6a7-2222-4b3c-8d4e-5f6071829304': toOcrDocument('d4e5f6a7-2222-4b3c-8d4e-5f6071829304', 'mock-sheet-2', 'payslip_1', 2002, PAYSLIP_1_ROWS),
-  'f6389128-9d36-4fc8-bd2d-55d700d3d347': toOcrDocument('f6389128-9d36-4fc8-bd2d-55d700d3d347', 'mock-sheet-3', 'loan_0', 3001, LOAN_0_ROWS),
-  'b68bbf95-48fd-49de-a92a-558d48f072f3': toOcrDocument('b68bbf95-48fd-49de-a92a-558d48f072f3', 'mock-sheet-4', 'credit_0', 4001, CREDIT_0_ROWS),
-  '832dfff1-7d80-4986-a769-2443a106d79c': toOcrDocument('832dfff1-7d80-4986-a769-2443a106d79c', 'mock-sheet-5', 'loan_0', 5001, LOAN_0_ROWS),
-  '7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a': toOcrDocument('7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a', 'mock-sheet-6', 'payslip_0', 6001, PAYSLIP_0_ROWS),
+  // (NTB-8814-2093) and same Request ID (see PAYSLIP_1_ROWS's comment
+  // above), different Document Type. This is the pairing this file
+  // exists to guard against.
+  'NTB-8814-2093::payslip_1': toOcrDocument('NTB-8814-2093', 'mock-sheet-2', 'payslip_1', 2002, PAYSLIP_1_ROWS),
+  'ETB-3357-6620::loan_0': toOcrDocument('ETB-3357-6620', 'mock-sheet-3', 'loan_0', 3001, LOAN_0_ROWS),
+  'NTB-1145-9902::credit_0': toOcrDocument('NTB-1145-9902', 'mock-sheet-4', 'credit_0', 4001, CREDIT_0_ROWS),
+  'ETB-7702-3384::loan_0': toOcrDocument('ETB-7702-3384', 'mock-sheet-5', 'loan_0', 5001, LOAN_0_ROWS),
+  'NTB-5561-0037::payslip_0': toOcrDocument('NTB-5561-0037', 'mock-sheet-6', 'payslip_0', 6001, PAYSLIP_0_ROWS),
 }
 
 function linkCell(label: string): { label: string; href: string | null } {
@@ -297,7 +302,11 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     rowIndex: 5,
     appId: 'rgitid',
     transactionId: 'NTB-8814-2093',
-    requestId: 'd4e5f6a7-2222-4b3c-8d4e-5f6071829304',
+    // Deliberately the SAME Request ID as the payslip_0 row above — real
+    // data has shown this happening live, and it's exactly the case
+    // masterRowKey (transactionId + documentType) exists to handle. See
+    // MasterRow.requestId's comment in types.ts.
+    requestId: '1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660',
     imageUrl: linkCell('File Link'),
     documentType: 'payslip_1',
     sheetUrl: linkCell('mock-sheet-2'),

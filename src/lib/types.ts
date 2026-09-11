@@ -34,12 +34,22 @@ export interface LinkCell {
   href: string | null
 }
 
-/** One row of the master sheet = one document (one Request ID). */
+/** One row of the master sheet = one document. */
 export interface MasterRow {
-  /** 1-based row number in the date tab, used to target writes. */
+  /** 1-based row number in the date tab, used to target writes — the
+   * actual physical position of this row, independent of any column's
+   * value, so it stays correct and row-specific regardless of what
+   * follows. */
   rowIndex: number
   appId: string
   transactionId: string
+  /** NOT a reliable per-row identifier — originally assumed to be (per
+   * the discovery notes, "a UUID, one per document"), but found live:
+   * real data has multiple rows under one transaction, even different
+   * document types, sharing the exact identical Request ID. Never key or
+   * match a row on this alone — see `masterRowKey`. Still shown to
+   * reviewers as-is (it's a real sheet column), just not trusted as a
+   * unique key by this app. */
   requestId: string
   imageUrl: LinkCell
   /** e.g. "loan_0", "loan_1", "payslip_0" — the exact OCR-tab name. */
@@ -57,6 +67,20 @@ export interface MasterRow {
   flags: string
   reclassified: string
   processed: string
+}
+
+/** The composite key this app actually treats as a row's unique identity
+ * — Transaction ID + Document Type, NOT Request ID (see MasterRow.
+ * requestId's comment for why). Document Type is reliably distinct across
+ * the documents within one transaction (payslip_0 vs payslip_1, loan_0 vs
+ * coe_0, ...), so the combination is what's safe to key selection, OCR
+ * document identity, and local-state row updates on throughout this app.
+ * The one case this still can't disambiguate is a genuine upstream
+ * duplicate — the exact same document (same transaction, same type)
+ * uploaded and processed twice — which has no reliable per-row
+ * identifier at all in this data; see README. */
+export function masterRowKey(row: { transactionId: string; documentType: string }): string {
+  return `${row.transactionId}::${row.documentType}`
 }
 
 export const MASTER_COLUMNS = [
@@ -122,15 +146,15 @@ export type OcrSection = OcrFieldsSection | OcrTableSection
 /** The parsed contents of one OCR tab (one document within a transaction's
  * per-transaction OCR spreadsheet). */
 export interface OcrDocument {
-  /** The master-row Request ID this OCR document was loaded for — the
+  /** `masterRowKey()` of the row this OCR document was loaded for — the
    * single source of truth for "which queue card does this data belong
-   * to". Transaction ID is NOT a safe stand-in: two rows can (and, found
-   * live, sometimes genuinely do) share one Transaction ID — a legitimate
-   * multi-page document, or an upstream double-processing — so anything
-   * that needs to know "is this still the document the reviewer is
-   * looking at" must compare requestId, never transactionId/documentType.
-   * See usePortal.ts's submit() for where this is actually enforced. */
-  requestId: string
+   * to". NOT Request ID: found live, real rows under one transaction —
+   * even different document types — can share the exact same Request ID,
+   * so it can't tell two documents apart. Compare this against
+   * `masterRowKey(selectedRow)`, never `requestId`, to know whether this
+   * data still belongs to the row on screen. See usePortal.ts's submit()
+   * for where this is actually enforced. */
+  rowKey: string
   spreadsheetId: string
   tabTitle: string
   gid: number

@@ -1,18 +1,20 @@
 import { useState } from 'react'
 import { avatarColor, docTypeBadge, reviewerInitials, statusDotColor } from '../lib/presentation'
-import { isPendingStatus, type MasterRow } from '../lib/types'
+import { isPendingStatus, masterRowKey, type MasterRow } from '../lib/types'
 import { ChevronLeft, ChevronRight } from './icons'
 
 interface Props {
   rows: MasterRow[]
-  selectedRequestId: string | null
-  onSelect: (requestId: string) => void
+  /** masterRowKey (Transaction ID + Document Type) of the selected row,
+   * not Request ID — see MasterRow.requestId's comment in types.ts. */
+  selectedRowKey: string | null
+  onSelect: (rowKey: string) => void
 }
 
 const EXPANDED_WIDTH = 272
 const COLLAPSED_WIDTH = 44
 
-export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
+export function QueueList({ rows, selectedRowKey, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState(false)
   const pendingCount = rows.filter((r) => isPendingStatus(r.status)).length
 
@@ -138,15 +140,16 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
         )}
 
         {rows.map((row) => {
-          const selected = row.requestId === selectedRequestId
+          const rowKey = masterRowKey(row)
+          const selected = rowKey === selectedRowKey
           const isDone = !isPendingStatus(row.status)
           const badge = docTypeBadge(row.documentType)
           const avatar = avatarColor(row.reviewer)
           const statusLabel = row.status === 'Manually Approved' ? 'Approved' : row.status === 'Manually Rejected' ? 'Rejected' : 'Pending'
           return (
             <button
-              key={row.requestId}
-              onClick={() => onSelect(row.requestId)}
+              key={rowKey}
+              onClick={() => onSelect(rowKey)}
               style={{
                 textAlign: 'left',
                 padding: 10,
@@ -205,13 +208,17 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
                     {badge.label}
                   </span>
                   {/* The exact tab name (payslip_0 vs payslip_1, ...), not
-                      just the friendly badge above — two cards can share
-                      both a Transaction ID and a doc type (multiple pages
-                      of one document type, or a genuine duplicate upload)
-                      and look otherwise identical; this is what actually
-                      tells them apart at a glance. */}
+                      just the friendly badge above. This is more than a
+                      nice-to-have: Transaction ID + this exact tab name is
+                      this app's actual unique key for a row (see
+                      masterRowKey in types.ts) — Request ID was found to
+                      repeat across rows in real data, so it can't be
+                      trusted for that. Two cards sharing both a
+                      Transaction ID and this exact tab name are a genuine
+                      upstream duplicate (the one case even this can't
+                      disambiguate), not an app bug. */}
                   <span
-                    title={row.requestId}
+                    title={`${row.documentType} — Request ID: ${row.requestId} (real data has shown this repeating across rows, so it's not what identifies this card)`}
                     style={{
                       fontFamily: 'var(--font-mono)',
                       fontSize: 9.5,

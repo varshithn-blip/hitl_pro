@@ -13,7 +13,7 @@ interface Props {
   submitting: boolean
   /** True while the OCR document for the currently-selected row is still
    * being fetched. Submitting during this window would race the fetch —
-   * see usePortal.ts submit()'s own requestId guard for why this must be
+   * see usePortal.ts submit()'s own rowKey guard for why this must be
    * blocked here too, not just relied on there. */
   loadingDoc: boolean
 }

@@ -105,7 +105,7 @@ console.log('\n=== parseOcrRows (blank-field-before-ordinary-field regression) =
 // untouched text field to be excluded.
 console.log('\n=== buildFieldEdits (edit-one-field-only scenario) ===')
 {
-  const original = MOCK_OCR_DOCS['a1b7c9d0-1111-4a2b-9c3d-4e5f60718293'].sections // ETB-2029-4471's loan_0, keyed by Request ID now
+  const original = MOCK_OCR_DOCS['ETB-2029-4471::loan_0'].sections // keyed by masterRowKey (Transaction ID + Document Type), not Request ID
   const draft = structuredClone(original) as OcrSection[]
   const fieldsSection = draft.find((s) => s.kind === 'fields' && s.title === 'Loan Details')
   if (fieldsSection?.kind === 'fields') {

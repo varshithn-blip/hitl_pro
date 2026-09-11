@@ -21,7 +21,7 @@ export default function App() {
   // previous document's tab choice over by accident.
   useEffect(() => {
     setRightTab('ocr')
-  }, [p.selectedRow?.requestId])
+  }, [p.selectedRowKey])
 
   const decisionStarted = p.decisionDraft.category !== '' || p.decisionDraft.status !== ''
 
@@ -46,7 +46,7 @@ export default function App() {
           />
 
           <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-            <QueueList rows={p.filteredRows} selectedRequestId={p.selectedRow?.requestId ?? null} onSelect={p.setSelectedRequestId} />
+            <QueueList rows={p.filteredRows} selectedRowKey={p.selectedRowKey} onSelect={p.setSelectedRowKey} />
 
             {p.rowsError ? (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--danger)', fontSize: 13 }}>{p.rowsError}</div>

@@ -7,7 +7,7 @@ import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
 import { baseDocType, mergeTaxonomy } from '../lib/taxonomy'
-import { isPendingStatus, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
+import { isPendingStatus, masterRowKey, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
 const EMPTY_DRAFT: DecisionDraft = { category: '', status: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
 
@@ -53,7 +53,10 @@ export function usePortal() {
   })
   const [search, setSearch] = useState('')
 
-  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null)
+  // Keyed by masterRowKey (Transaction ID + Document Type), not Request
+  // ID — see MasterRow.requestId's comment in types.ts for why Request ID
+  // can't be trusted to tell two rows apart.
+  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null)
   const [currentDoc, setCurrentDoc] = useState<OcrDocument | null>(null)
   const [draftSections, setDraftSections] = useState<OcrSection[] | null>(null)
   const [decisionDraft, setDecisionDraft] = useState<DecisionDraft>(EMPTY_DRAFT)
@@ -180,37 +183,38 @@ export function usePortal() {
 
   // Default selection: first row of the filtered queue, whenever nothing
   // (or a since-filtered-out row) is selected. Every row — every
-  // Request ID, whatever Transaction ID it shares with other rows — is
-  // its own independent queue card, opened and submitted on its own; the
-  // queue list is the only way to move between them.
+  // Transaction ID + Document Type combination, whatever Request ID it
+  // shares with another row — is its own independent queue card, opened
+  // and submitted on its own; the queue list is the only way to move
+  // between them.
   //
-  // Deliberately depends on `filteredRows` only, not `selectedRequestId`,
+  // Deliberately depends on `filteredRows` only, not `selectedRowKey`,
   // using the functional setState form to read the current selection
   // without needing it as a dependency — so this only re-validates when
   // the *available queue itself* changes (filters, search, or the loaded
   // rows), not merely because the selection changed.
   useEffect(() => {
-    setSelectedRequestId((current) => {
-      if (current && filteredRows.some((r) => r.requestId === current)) return current
-      return filteredRows[0]?.requestId ?? null
+    setSelectedRowKey((current) => {
+      if (current && filteredRows.some((r) => masterRowKey(r) === current)) return current
+      return filteredRows[0] ? masterRowKey(filteredRows[0]) : null
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredRows])
 
-  const selectedRow = useMemo(() => masterRows.find((r) => r.requestId === selectedRequestId) ?? null, [masterRows, selectedRequestId])
+  const selectedRow = useMemo(() => masterRows.find((r) => masterRowKey(r) === selectedRowKey) ?? null, [masterRows, selectedRowKey])
 
   // --- Load the OCR document for whichever row is selected --------------
-  // Request ID is the only safe key here — see OcrDocument.requestId's
-  // comment in types.ts. Two rows can share a Transaction ID and even a
-  // base doc type (two pages of one payslip, or — found live — an
-  // upstream double-processing), so `currentDoc`/`draftSections` are
-  // cleared synchronously the instant `selectedRow` changes, before the
-  // async fetch even starts: there must be no window where the OLD
-  // document's data is still sitting there labeled as if it belongs to
-  // the newly-selected row. `loadingDoc` gates the UI (App.tsx shows a
-  // loading placeholder instead of stale content), and submit() has its
-  // own independent requestId check as a second guard against a race
-  // where Submit gets clicked before this fetch has caught up.
+  // masterRowKey (Transaction ID + Document Type) is the only safe key
+  // here — see OcrDocument.rowKey's comment in types.ts. Two rows can
+  // share a Request ID (found live — real data, not a hypothetical), so
+  // `currentDoc`/`draftSections` are cleared synchronously the instant
+  // `selectedRow` changes, before the async fetch even starts: there must
+  // be no window where the OLD document's data is still sitting there
+  // labeled as if it belongs to the newly-selected row. `loadingDoc`
+  // gates the UI (App.tsx shows a loading placeholder instead of stale
+  // content), and submit() has its own independent rowKey check as a
+  // second guard against a race where Submit gets clicked before this
+  // fetch has caught up.
   useEffect(() => {
     setCurrentDoc(null)
     setDraftSections(null)
@@ -220,9 +224,10 @@ export function usePortal() {
       return
     }
     setDecisionDraft(seedDraft(selectedRow))
+    const rowKey = masterRowKey(selectedRow)
 
     if (DEMO_MODE) {
-      const doc = MOCK_OCR_DOCS[selectedRow.requestId] ?? null
+      const doc = MOCK_OCR_DOCS[rowKey] ?? null
       setCurrentDoc(doc)
       setDraftSections(doc ? structuredClone(doc.sections) : null)
       return
@@ -247,7 +252,7 @@ export function usePortal() {
         const parsedDoc = parseOcrRows(rows)
         const sections = await attachFieldValidation(parsedDoc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
         if (cancelled) return
-        const doc: OcrDocument = { requestId: selectedRow.requestId, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
+        const doc: OcrDocument = { rowKey, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
         setCurrentDoc(doc)
         setDraftSections(structuredClone(doc.sections))
       } catch (err) {
@@ -265,7 +270,7 @@ export function usePortal() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRow?.requestId, user])
+  }, [selectedRow && masterRowKey(selectedRow), user])
 
   // --- Resolve the document image -----------------------------------------
   // The actual document file lives behind the "Drive Link" column, not
@@ -316,7 +321,12 @@ export function usePortal() {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [selectedRow?.requestId, user])
+    // masterRowKey, not requestId — two rows can share a Request ID
+    // (see MasterRow.requestId's comment), which would otherwise make
+    // this effect not re-run at all when switching between them, leaving
+    // the first row's image showing under the second row's selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRow && masterRowKey(selectedRow), user])
 
   // --- OCR field/table edit handlers ------------------------------------
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {
@@ -376,11 +386,12 @@ export function usePortal() {
     // the currently selected row hasn't caught up yet, or currentDoc
     // somehow still belongs to a previous selection, refuse to submit
     // rather than risk writing the OCR edits into the wrong document's
-    // tab. Request ID is the only thing that can answer "does this OCR
-    // data actually belong to this row?" — see OcrDocument.requestId. A
+    // tab. masterRowKey is the only thing that can answer "does this OCR
+    // data actually belong to this row?" — see OcrDocument.rowKey. A
     // currentDoc that's simply null (the read genuinely failed) is fine
     // to proceed past — that's an intentional decision-only submit.
-    if (loadingDoc || (currentDoc !== null && currentDoc.requestId !== selectedRow.requestId)) {
+    const selectedKey = masterRowKey(selectedRow)
+    if (loadingDoc || (currentDoc !== null && currentDoc.rowKey !== selectedKey)) {
       setSyncState('error')
       setSyncMessage('Still loading this document — try Submit again in a moment.')
       return
@@ -396,8 +407,13 @@ export function usePortal() {
     }
 
     setSyncState('saving')
-    const oldFilteredOrder = filteredRows.map((r) => r.requestId)
-    const submittedRequestId = selectedRow.requestId
+    // Keyed by masterRowKey, not requestId: two rows can share a Request
+    // ID, and matching on it here would have updated *both* rows' local
+    // state from one submit (the actual sheet write below was always
+    // fine — it targets rowIndex, the row's real physical position — but
+    // this in-app mirror of it was not).
+    const oldFilteredOrder = filteredRows.map((r) => masterRowKey(r))
+    const submittedRowKey = selectedKey
 
     try {
       if (!DEMO_MODE) {
@@ -415,13 +431,13 @@ export function usePortal() {
 
       // Reflect the decision locally either way (demo mode's only
       // persistence, and in real mode so the UI doesn't wait on a re-fetch).
-      setMasterRows((prev) => prev.map((r) => (r.requestId === submittedRequestId ? { ...r, ...decision } : r)))
+      setMasterRows((prev) => prev.map((r) => (masterRowKey(r) === submittedRowKey ? { ...r, ...decision } : r)))
       setSyncState('saved')
       setSyncMessage(undefined)
 
-      const idx = oldFilteredOrder.indexOf(submittedRequestId)
-      const nextId = oldFilteredOrder[idx + 1] ?? null
-      setSelectedRequestId(nextId)
+      const idx = oldFilteredOrder.indexOf(submittedRowKey)
+      const nextKey = oldFilteredOrder[idx + 1] ?? null
+      setSelectedRowKey(nextKey)
     } catch (err) {
       setSyncState('error')
       setSyncMessage(err instanceof Error ? err.message : 'Save failed')
@@ -452,7 +468,8 @@ export function usePortal() {
     pendingCount,
 
     selectedRow,
-    setSelectedRequestId,
+    selectedRowKey,
+    setSelectedRowKey,
     currentDoc,
     draftSections,
     loadingDoc,
