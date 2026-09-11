@@ -6,7 +6,7 @@ import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
-import { mergeTaxonomy } from '../lib/taxonomy'
+import { baseDocType, mergeTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
 const EMPTY_DRAFT: DecisionDraft = { category: '', status: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
@@ -52,6 +52,7 @@ export function usePortal() {
     reviewer: 'All',
     status: 'Pending',
     apiCalled: 'all',
+    documentType: 'All',
   })
   const [search, setSearch] = useState('')
 
@@ -170,20 +171,43 @@ export function usePortal() {
       if (filters.status !== 'All' && filters.status !== 'Pending' && row.status !== filters.status) return false
       if (filters.apiCalled === 'done' && row.apiCalled !== 'Done') return false
       if (filters.apiCalled === 'not_done' && row.apiCalled === 'Done') return false
+      if (filters.documentType !== 'All' && baseDocType(row.documentType) !== filters.documentType) return false
       if (search.trim() && !row.transactionId.toLowerCase().includes(search.trim().toLowerCase())) return false
       return true
     })
   }, [masterRows, filters, search])
 
   const reviewers = useMemo(() => Array.from(new Set(masterRows.map((r) => r.reviewer).filter(Boolean))).sort(), [masterRows])
+  const docTypes = useMemo(() => Array.from(new Set(masterRows.map((r) => baseDocType(r.documentType)).filter(Boolean))).sort(), [masterRows])
   const pendingCount = useMemo(() => masterRows.filter((r) => isPendingStatus(r.status)).length, [masterRows])
 
   // Default selection: first row of the filtered queue, whenever nothing
   // (or a since-filtered-out row) is selected.
+  //
+  // Deliberately depends on `filteredRows` only, not `selectedRequestId` —
+  // a real bug when it did: the ImageViewer's Next/Previous document
+  // controls (see siblingDocs below) move between documents that share a
+  // Transaction ID, which can easily include a sibling that isn't part of
+  // the *currently filtered* queue (already reviewed by someone else,
+  // assigned to a different reviewer, excluded by the search box, ...).
+  // With `selectedRequestId` as a dependency, clicking Next re-ran this
+  // effect immediately, saw the sibling wasn't in `filteredRows`, and
+  // snapped straight back to `filteredRows[0]` — so the button visibly
+  // did nothing. This should only fire when the *available queue itself*
+  // changes (filters, search, or the loaded rows) and the current
+  // selection no longer belongs to it — never merely because the
+  // selection changed, which covers both sibling navigation and picking
+  // a row directly from the queue list (already guaranteed to be in
+  // filteredRows, so re-validating it is redundant anyway). The
+  // functional setState form reads the true latest selection without
+  // needing it as a dependency.
   useEffect(() => {
-    if (selectedRequestId && filteredRows.some((r) => r.requestId === selectedRequestId)) return
-    setSelectedRequestId(filteredRows[0]?.requestId ?? null)
-  }, [filteredRows, selectedRequestId])
+    setSelectedRequestId((current) => {
+      if (current && filteredRows.some((r) => r.requestId === current)) return current
+      return filteredRows[0]?.requestId ?? null
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredRows])
 
   const selectedRow = useMemo(() => masterRows.find((r) => r.requestId === selectedRequestId) ?? null, [masterRows, selectedRequestId])
 
@@ -404,6 +428,7 @@ export function usePortal() {
     taxonomy,
     dateTabs,
     reviewers,
+    docTypes,
     filters,
     setFilters,
     search,

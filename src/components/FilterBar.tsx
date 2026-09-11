@@ -1,3 +1,4 @@
+import { docTypeBadge } from '../lib/presentation'
 import type { ApiCalledFilter, QueueFilters } from '../lib/types'
 import { ChevronDown, Search } from './icons'
 
@@ -61,6 +62,7 @@ const API_CALLED_OPTIONS: { value: ApiCalledFilter; label: string }[] = [
 interface Props {
   dateTabs: string[]
   reviewers: string[]
+  docTypes: string[]
   filters: QueueFilters
   onChange: (next: QueueFilters) => void
   queueCount: number
@@ -69,7 +71,7 @@ interface Props {
   onSearchChange: (value: string) => void
 }
 
-export function FilterBar({ dateTabs, reviewers, filters, onChange, queueCount, pendingCount, search, onSearchChange }: Props) {
+export function FilterBar({ dateTabs, reviewers, docTypes, filters, onChange, queueCount, pendingCount, search, onSearchChange }: Props) {
   return (
     <div
       style={{
@@ -97,6 +99,14 @@ export function FilterBar({ dateTabs, reviewers, filters, onChange, queueCount, 
         onChange={(reviewer) => onChange({ ...filters, reviewer: reviewer as QueueFilters['reviewer'] })}
         options={[{ value: 'All', label: 'All reviewers' }, ...reviewers.map((r) => ({ value: r, label: r }))]}
         width={190}
+      />
+
+      <ChipSelect
+        label="Doc type"
+        value={filters.documentType}
+        onChange={(documentType) => onChange({ ...filters, documentType })}
+        options={[{ value: 'All', label: 'All types' }, ...docTypes.map((t) => ({ value: t, label: docTypeBadge(t).label }))]}
+        width={170}
       />
 
       <ChipSelect

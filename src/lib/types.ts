@@ -182,4 +182,9 @@ export interface QueueFilters {
   reviewer: string | 'All'
   status: StatusValue | 'All' | 'Pending'
   apiCalled: ApiCalledFilter
+  /** Base document type (payslip/credit/loan/coe — see taxonomy.ts
+   * `baseDocType`), not the exact "loan_0"/"loan_1" tab name — a
+   * reviewer filtering by type means "show me payslips", not "show me
+   * specifically the 2nd loan doc of a transaction". */
+  documentType: string | 'All'
 }

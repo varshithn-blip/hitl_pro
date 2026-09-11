@@ -44,9 +44,14 @@ real and clickable — only the data source is fake.
 ## What it does
 
 - **Filters** — Date (maps to the master sheet's date-named tab),
-  Reviewer, Status, and API Called (a 3-state filter: any / done only /
-  not done — not a plain distinct-values dropdown, per the confirmed
-  spec).
+  Reviewer, Document Type, Status, and API Called (a 3-state filter: any
+  / done only / not done — not a plain distinct-values dropdown, per the
+  confirmed spec). Document Type filters by *base* type
+  (payslip/credit/loan/coe — see `taxonomy.ts` `baseDocType`), not the
+  exact `loan_0`/`loan_1` tab name — "show me payslips", not "show me
+  specifically the 2nd loan doc of a transaction" — and, like the
+  Reviewer filter, only lists types actually present in the loaded date
+  tab rather than a fixed list.
 - **Batched row loading** — a production date tab can run into the
   thousands of rows (~3000 observed). Fetching that in one
   `spreadsheets.get` — especially with hyperlink/validation metadata on
@@ -68,7 +73,17 @@ real and clickable — only the data source is fake.
   iframe, which already has multi-page scrolling, its own zoom, and text
   search — no bundled PDF library needed. A prev/next switcher appears
   when a transaction has more than one document (the `loan_0`/`loan_1`
-  case).
+  case, or two different document types sharing one transaction — a
+  sibling isn't required to share a document type). This switcher moves
+  between siblings independently of the active queue filters: a sibling
+  can easily not match the current Reviewer/Status/Doc type/API called
+  filter (already reviewed, assigned to someone else, a different doc
+  type, ...) and must still be reachable — `usePortal.ts`'s auto-select
+  guard only re-validates the current selection when the *filtered queue
+  itself* changes, not on every selection change, so navigating to a
+  filtered-out sibling doesn't immediately get overridden back to
+  `filteredRows[0]` (a real bug this fixed — the Next/Previous buttons
+  looked like they simply didn't work).
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary

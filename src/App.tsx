@@ -36,6 +36,7 @@ export default function App() {
           <FilterBar
             dateTabs={p.dateTabs}
             reviewers={p.reviewers}
+            docTypes={p.docTypes}
             filters={p.filters}
             onChange={p.setFilters}
             queueCount={p.filteredRows.length}
