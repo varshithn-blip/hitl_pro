@@ -120,6 +120,75 @@ const PAYSLIP_1_ROWS: string[][] = [
   row('Net Salary', '41700.00'),
 ]
 
+// The OTHER live collision: two entirely different Request IDs sharing
+// one Transaction ID, each on its own payslip_0 — the case that broke a
+// Transaction-ID-+-Document-Type-only key (both rows would render as
+// "ETB-6673-0091::payslip_0"). Only Request ID tells these two apart, so
+// masterRowKey needs it alongside Transaction ID and Document Type, not
+// instead of Transaction ID. Deliberately different Employee Name/Basic
+// Pay from each other so a test can tell them apart.
+const ALPHA_PAYSLIP_0_ROWS: string[][] = [
+  row('HyperVergeTransaction ID', 'ETB-6673-0091'),
+  row('Customer ID', 'rgitid'),
+  row('Error'),
+  [],
+  row('Fields', 'Values'),
+  row('Salary Period Start Date', '01/09/2026'),
+  row('Salary Period End Date', '15/09/2026'),
+  row('Pay Date'),
+  row('Duration', '15'),
+  row('Coverage Period', 'S'),
+  row('Employee Name', 'Alicia P. Fernandez'),
+  row('Employer Name', 'Lucena Trading Co'),
+  row('Company Category', 'Cat A'),
+  row('Employee ID', '5510-002'),
+  row('Employee Designation', 'Accounting Clerk'),
+  row('SSS Number'),
+  row('TIN Number'),
+  row('PhilHealth Number'),
+  row('Tax Status'),
+  row('Salary Details'),
+  row('Fields', 'Values'),
+  row('Currency', 'PHP'),
+  row('Basic Pay', '18500'),
+  row('Variable Pay'),
+  row('Gross Salary', '22940.00'),
+  row('SSS Premium'),
+  row('PhilHealth Premium', '900'),
+  row('Net Salary', '22040.00'),
+]
+
+const BETA_PAYSLIP_0_ROWS: string[][] = [
+  row('HyperVergeTransaction ID', 'ETB-6673-0091'),
+  row('Customer ID', 'rgitid'),
+  row('Error'),
+  [],
+  row('Fields', 'Values'),
+  row('Salary Period Start Date', '01/09/2026'),
+  row('Salary Period End Date', '15/09/2026'),
+  row('Pay Date'),
+  row('Duration', '15'),
+  row('Coverage Period', 'S'),
+  row('Employee Name', 'Bayani R. Santos'),
+  row('Employer Name', 'Lucena Trading Co'),
+  row('Company Category', 'Cat A'),
+  row('Employee ID', '5510-014'),
+  row('Employee Designation', 'Warehouse Supervisor'),
+  row('SSS Number'),
+  row('TIN Number'),
+  row('PhilHealth Number'),
+  row('Tax Status'),
+  row('Salary Details'),
+  row('Fields', 'Values'),
+  row('Currency', 'PHP'),
+  row('Basic Pay', '24000'),
+  row('Variable Pay'),
+  row('Gross Salary', '29120.00'),
+  row('SSS Premium'),
+  row('PhilHealth Premium', '900'),
+  row('Net Salary', '28220.00'),
+]
+
 const CREDIT_0_ROWS: string[][] = [
   row('HyperVergeTransaction ID', 'NTB-1145-9902'),
   row('Customer ID', 'rgitid'),
@@ -172,8 +241,8 @@ const COE_0_ROWS: string[][] = [
   row('Housing Allowance', '4500', 'Monthly'),
 ]
 
-function toOcrDocument(transactionId: string, spreadsheetId: string, tabTitle: string, gid: number, rows: string[][]): OcrDocument {
-  const rowKey = masterRowKey({ transactionId, documentType: tabTitle })
+function toOcrDocument(transactionId: string, requestId: string, spreadsheetId: string, tabTitle: string, gid: number, rows: string[][]): OcrDocument {
+  const rowKey = masterRowKey({ transactionId, requestId, documentType: tabTitle })
   return { rowKey, spreadsheetId, tabTitle, gid, ...parseOcrRows(rows) }
 }
 
@@ -199,36 +268,84 @@ function withFieldOptions(doc: OcrDocument, label: string, options: string[]): O
 
 const COMPANY_CATEGORY_OPTIONS = ['Cat A', 'Cat B', 'Cat C', 'No Match']
 
-/** Keyed by `masterRowKey` (Transaction ID + Document Type) — NOT Request
- * ID. Real data has shown Request ID repeating across rows under one
- * transaction, even across different document types (see OcrDocument's
- * rowKey comment in types.ts), so it can't be trusted as a lookup key.
- * Document Type is what's actually distinct within a transaction here:
- * the coe_0/loan_0 pair below differ by type, and — the case this file
- * exists to guard against — `NTB-8814-2093`'s two payslip rows below
- * deliberately share the SAME Request ID (see PAYSLIP_1_ROWS's comment)
- * and are only told apart by documentType (payslip_0 vs payslip_1). */
+/** Keyed by `masterRowKey` — Transaction ID + Request ID + Document Type,
+ * ALL THREE together. Neither Request ID nor Transaction ID + Document
+ * Type alone is trustworthy (see `masterRowKey`'s comment in types.ts for
+ * the two separate live collisions that ruled each of those out):
+ *   - `NTB-8814-2093`'s two payslip rows below deliberately share the
+ *     SAME Request ID (see PAYSLIP_1_ROWS's comment) and are only told
+ *     apart by Document Type (payslip_0 vs payslip_1).
+ *   - `ETB-6673-0091`'s two payslip_0 rows below deliberately share the
+ *     SAME Transaction ID *and* Document Type, and are only told apart
+ *     by Request ID (see ALPHA/BETA_PAYSLIP_0_ROWS's comment). */
 export const MOCK_OCR_DOCS: Record<string, OcrDocument> = {
-  'ETB-2029-4471::coe_0': withFieldOptions(
-    toOcrDocument('ETB-2029-4471', 'mock-sheet-1', 'coe_0', 1001, COE_0_ROWS),
+  'ETB-2029-4471::5f84b481-51f0-4d3a-8dd2-11f54c20db1b::coe_0': withFieldOptions(
+    toOcrDocument('ETB-2029-4471', '5f84b481-51f0-4d3a-8dd2-11f54c20db1b', 'mock-sheet-1', 'coe_0', 1001, COE_0_ROWS),
     'Company Category',
     COMPANY_CATEGORY_OPTIONS,
   ),
-  'ETB-2029-4471::loan_0': toOcrDocument('ETB-2029-4471', 'mock-sheet-1', 'loan_0', 1002, LOAN_0_ROWS),
-  'NTB-8814-2093::payslip_0': withFieldOptions(
-    toOcrDocument('NTB-8814-2093', 'mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
+  'ETB-2029-4471::a1b7c9d0-1111-4a2b-9c3d-4e5f60718293::loan_0': toOcrDocument(
+    'ETB-2029-4471',
+    'a1b7c9d0-1111-4a2b-9c3d-4e5f60718293',
+    'mock-sheet-1',
+    'loan_0',
+    1002,
+    LOAN_0_ROWS,
+  ),
+  'NTB-8814-2093::1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660::payslip_0': withFieldOptions(
+    toOcrDocument('NTB-8814-2093', '1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660', 'mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
     'Company Category',
     COMPANY_CATEGORY_OPTIONS,
   ),
   // Second page of the SAME payslip as above — same Transaction ID
   // (NTB-8814-2093) and same Request ID (see PAYSLIP_1_ROWS's comment
-  // above), different Document Type. This is the pairing this file
-  // exists to guard against.
-  'NTB-8814-2093::payslip_1': toOcrDocument('NTB-8814-2093', 'mock-sheet-2', 'payslip_1', 2002, PAYSLIP_1_ROWS),
-  'ETB-3357-6620::loan_0': toOcrDocument('ETB-3357-6620', 'mock-sheet-3', 'loan_0', 3001, LOAN_0_ROWS),
-  'NTB-1145-9902::credit_0': toOcrDocument('NTB-1145-9902', 'mock-sheet-4', 'credit_0', 4001, CREDIT_0_ROWS),
-  'ETB-7702-3384::loan_0': toOcrDocument('ETB-7702-3384', 'mock-sheet-5', 'loan_0', 5001, LOAN_0_ROWS),
-  'NTB-5561-0037::payslip_0': toOcrDocument('NTB-5561-0037', 'mock-sheet-6', 'payslip_0', 6001, PAYSLIP_0_ROWS),
+  // above), different Document Type. This is one of the two pairings
+  // this file exists to guard against.
+  'NTB-8814-2093::1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660::payslip_1': toOcrDocument(
+    'NTB-8814-2093',
+    '1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660',
+    'mock-sheet-2',
+    'payslip_1',
+    2002,
+    PAYSLIP_1_ROWS,
+  ),
+  'ETB-3357-6620::f6389128-9d36-4fc8-bd2d-55d700d3d347::loan_0': toOcrDocument(
+    'ETB-3357-6620',
+    'f6389128-9d36-4fc8-bd2d-55d700d3d347',
+    'mock-sheet-3',
+    'loan_0',
+    3001,
+    LOAN_0_ROWS,
+  ),
+  'NTB-1145-9902::b68bbf95-48fd-49de-a92a-558d48f072f3::credit_0': toOcrDocument(
+    'NTB-1145-9902',
+    'b68bbf95-48fd-49de-a92a-558d48f072f3',
+    'mock-sheet-4',
+    'credit_0',
+    4001,
+    CREDIT_0_ROWS,
+  ),
+  'ETB-7702-3384::832dfff1-7d80-4986-a769-2443a106d79c::loan_0': toOcrDocument(
+    'ETB-7702-3384',
+    '832dfff1-7d80-4986-a769-2443a106d79c',
+    'mock-sheet-5',
+    'loan_0',
+    5001,
+    LOAN_0_ROWS,
+  ),
+  'NTB-5561-0037::7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a::payslip_0': toOcrDocument(
+    'NTB-5561-0037',
+    '7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a',
+    'mock-sheet-6',
+    'payslip_0',
+    6001,
+    PAYSLIP_0_ROWS,
+  ),
+  // Same Transaction ID AND same Document Type, different Request ID —
+  // the collision a Transaction-ID-+-Document-Type-only key would have
+  // missed entirely (both would render as "ETB-6673-0091::payslip_0").
+  'ETB-6673-0091::req-alpha-111::payslip_0': toOcrDocument('ETB-6673-0091', 'req-alpha-111', 'mock-sheet-7', 'payslip_0', 7001, ALPHA_PAYSLIP_0_ROWS),
+  'ETB-6673-0091::req-beta-222::payslip_0': toOcrDocument('ETB-6673-0091', 'req-beta-222', 'mock-sheet-7', 'payslip_0', 7002, BETA_PAYSLIP_0_ROWS),
 }
 
 function linkCell(label: string): { label: string; href: string | null } {
@@ -303,9 +420,9 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     appId: 'rgitid',
     transactionId: 'NTB-8814-2093',
     // Deliberately the SAME Request ID as the payslip_0 row above — real
-    // data has shown this happening live, and it's exactly the case
-    // masterRowKey (transactionId + documentType) exists to handle. See
-    // MasterRow.requestId's comment in types.ts.
+    // data has shown this happening live, and it's exactly one of the two
+    // cases masterRowKey (Transaction ID + Request ID + Document Type)
+    // exists to handle. See MasterRow.requestId's comment in types.ts.
     requestId: '1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660',
     imageUrl: linkCell('File Link'),
     documentType: 'payslip_1',
@@ -392,6 +509,49 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     fraudReason: [],
     reviewer: 'Juan Dela Cruz',
     apiCalled: 'Done',
+    driveLink: linkCell('Drive Link'),
+    flags: '',
+    reclassified: '',
+    processed: '',
+  },
+  {
+    rowIndex: 10,
+    appId: 'rgitid',
+    // Same Transaction ID as the row below, but a different Request
+    // ID and the same Document Type — the second live collision
+    // masterRowKey has to handle (see its comment in types.ts): a
+    // Transaction-ID-+-Document-Type-only key would have merged these
+    // two genuinely different documents into one queue card.
+    transactionId: 'ETB-6673-0091',
+    requestId: 'req-alpha-111',
+    imageUrl: linkCell('File Link'),
+    documentType: 'payslip_0',
+    sheetUrl: linkCell('mock-sheet-7'),
+    category: '',
+    rejectionReason: '',
+    status: '',
+    fraudReason: [],
+    reviewer: 'Roland Lim',
+    apiCalled: '',
+    driveLink: linkCell('Drive Link'),
+    flags: '',
+    reclassified: '',
+    processed: '',
+  },
+  {
+    rowIndex: 11,
+    appId: 'rgitid',
+    transactionId: 'ETB-6673-0091',
+    requestId: 'req-beta-222',
+    imageUrl: linkCell('File Link'),
+    documentType: 'payslip_0',
+    sheetUrl: linkCell('mock-sheet-7'),
+    category: '',
+    rejectionReason: '',
+    status: '',
+    fraudReason: [],
+    reviewer: 'Roland Lim',
+    apiCalled: '',
     driveLink: linkCell('Drive Link'),
     flags: '',
     reclassified: '',

@@ -73,17 +73,17 @@ real and clickable — only the data source is fake.
   iframe, which already has multi-page scrolling, its own zoom, and text
   search — no bundled PDF library needed.
 
-  **Every row (every Transaction ID + Document Type pair) is its own
-  independent queue card**, opened, decided, and submitted on its own —
-  including when two rows share a Transaction ID (the `loan_0`/`loan_1`
-  case, or two different document types under one transaction). There is
-  deliberately no separate "next document in this transaction" switcher
-  inside the document viewer: an earlier version had one, and it turned
-  out genuinely difficult to get right (a sibling can easily not match
-  the active Reviewer/Status/Doc type/API called filter — already
-  reviewed, assigned to someone else, a different doc type — so it
-  needed a navigation path that bypassed the queue's own filtering
-  without fighting the queue's "auto-select a valid row" logic;
+  **Every row — every Transaction ID + Request ID + Document Type
+  combination — is its own independent queue card**, opened, decided, and
+  submitted on its own — including when two rows share a Transaction ID
+  (the `loan_0`/`loan_1` case, or two different document types under one
+  transaction). There is deliberately no separate "next document in this
+  transaction" switcher inside the document viewer: an earlier version
+  had one, and it turned out genuinely difficult to get right (a sibling
+  can easily not match the active Reviewer/Status/Doc type/API called
+  filter — already reviewed, assigned to someone else, a different doc
+  type — so it needed a navigation path that bypassed the queue's own
+  filtering without fighting the queue's "auto-select a valid row" logic;
   simplified away instead of debugged further under time pressure). Two
   cards sharing a Transaction ID are still visually easy to spot side by
   side in the queue list — same ID text at the top of each card — a
@@ -95,46 +95,59 @@ real and clickable — only the data source is fake.
   genuine duplicates, not just look-alikes) — the friendly doc-type badge
   alone can't tell those apart, so the queue card also shows the raw tab
   name (`payslip_0` vs `payslip_1`) next to it. If two cards show the
-  *exact same* raw tab name for the same transaction, that's not an app
-  bug — it's the pipeline having genuinely processed that document
-  twice, worth flagging upstream rather than something this portal can
-  reconcile on its own.
+  *exact same* raw tab name **and** the exact same Request ID for the
+  same transaction, that's not an app bug — it's the pipeline having
+  genuinely processed that document twice, worth flagging upstream rather
+  than something this portal can reconcile on its own.
 
-  **Transaction ID + Document Type — not Request ID — is the composite
-  key this app treats as a row's unique identity.** An earlier version
-  keyed everything on Request ID alone, on the assumption (from the
-  original discovery notes) that it was "a UUID, one per document." That
-  assumption turned out to be wrong: real production data has shown
-  multiple rows under one transaction — even rows of *different* document
-  types — sharing the exact same Request ID. Since `Array.prototype.find`
-  always resolves to the *first* matching row, every queue card with a
-  colliding Request ID silently opened onto the same first row's data
-  underneath, no matter which card a reviewer actually clicked — the
-  root cause behind the "two cards look selected at once" / "can't
-  navigate to the next document" reports. `lib/types.ts` → `masterRowKey`
-  (`${transactionId}::${documentType}`) is now the single key used
-  everywhere row identity matters: queue selection/highlighting,
-  `OcrDocument.rowKey` (what the loaded OCR data is checked against
-  before it's trusted or written back), and local-state updates after a
-  submit. Document Type is reliably distinct across the documents within
-  one transaction (`payslip_0` vs `payslip_1`, `loan_0` vs `coe_0`, ...),
-  which is exactly what makes the combination safe where Request ID
-  wasn't. Request ID is still shown to reviewers as real sheet data (in
-  the transaction summary and the queue card's tooltip) — it's just no
-  longer trusted as a lookup key. The one case even this composite key
-  can't disambiguate is a genuine upstream duplicate — the exact same
-  document (same transaction, same type) uploaded and processed twice —
-  which has no reliable per-row identifier at all in this data; see the
-  doc-type-badge paragraph above for how that case is surfaced instead.
-  The OCR-load effect clears `currentDoc`/`draftSections` synchronously
-  the instant the selected row changes — before the async fetch even
-  starts — so there's no window where a previous document's data sits on
-  screen mislabeled as the new selection while the real fetch is still in
-  flight; `submit()` independently refuses to run (and the Submit button
-  disables, showing "Loading document…") unless the currently loaded OCR
-  document's `rowKey` actually matches the selected row's `masterRowKey`,
-  rather than either silently skipping the OCR write-back or, worse,
-  writing it into a different document's tab.
+  **Transaction ID + Request ID + Document Type, all three together — not
+  Request ID alone, and not Transaction ID + Document Type alone — is the
+  composite key this app treats as a row's unique identity.** This went
+  through two corrections as real production data kept contradicting each
+  narrower assumption:
+  1. An earlier version keyed everything on Request ID alone, on the
+     assumption (from the original discovery notes) that it was "a UUID,
+     one per document." Real data showed multiple rows under one
+     transaction — even rows of *different* document types — sharing the
+     exact same Request ID. Since `Array.prototype.find` always resolves
+     to the *first* matching row, every queue card with a colliding
+     Request ID silently opened onto the same first row's data
+     underneath, no matter which card a reviewer actually clicked — the
+     root cause behind the "two cards look selected at once" / "can't
+     navigate to the next document" reports.
+  2. The fix for that — Transaction ID + Document Type — then turned out
+     to have its own gap: one transaction can carry *more than one*
+     Request ID, each producing its own set of document types (e.g. two
+     separate `payslip_0`/`payslip_1` pairs under one Transaction ID,
+     eight rows total but only 4 distinct Transaction-ID+Document-Type
+     combinations among them). Two of those rows would have collided
+     under that two-part key despite being genuinely different documents.
+
+  `lib/types.ts` → `masterRowKey` (`` `${transactionId}::${requestId}::${documentType}` ``)
+  is now the single key used everywhere row identity matters: queue
+  selection/highlighting, `OcrDocument.rowKey` (what the loaded OCR data
+  is checked against before it's trusted or written back), and
+  local-state updates after a submit. Each of the three fields is what
+  disambiguates a specific real collision found live — Document Type
+  catches case 1, Request ID catches case 2, Transaction ID is what
+  scopes both of them to begin with — so none of the three is dropped in
+  favor of the other two. Request ID is still shown to reviewers as real
+  sheet data (in the transaction summary and the queue card's tooltip) —
+  it's just never trusted as a lookup key *by itself*. The one case even
+  this composite key can't disambiguate is a genuine upstream duplicate —
+  the exact same document (same transaction, same request, same type)
+  uploaded and processed twice — which has no reliable per-row identifier
+  at all in this data; see the doc-type-badge paragraph above for how
+  that case is surfaced instead. The OCR-load effect clears
+  `currentDoc`/`draftSections` synchronously the instant the selected row
+  changes — before the async fetch even starts — so there's no window
+  where a previous document's data sits on screen mislabeled as the new
+  selection while the real fetch is still in flight; `submit()`
+  independently refuses to run (and the Submit button disables, showing
+  "Loading document…") unless the currently loaded OCR document's
+  `rowKey` actually matches the selected row's `masterRowKey`, rather
+  than either silently skipping the OCR write-back or, worse, writing it
+  into a different document's tab.
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary

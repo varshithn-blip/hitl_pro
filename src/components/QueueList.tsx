@@ -5,8 +5,9 @@ import { ChevronLeft, ChevronRight } from './icons'
 
 interface Props {
   rows: MasterRow[]
-  /** masterRowKey (Transaction ID + Document Type) of the selected row,
-   * not Request ID — see MasterRow.requestId's comment in types.ts. */
+  /** masterRowKey (Transaction ID + Request ID + Document Type) of the
+   * selected row — see MasterRow.requestId's comment in types.ts for why
+   * no one or two of those three fields alone is enough. */
   selectedRowKey: string | null
   onSelect: (rowKey: string) => void
 }
@@ -209,16 +210,22 @@ export function QueueList({ rows, selectedRowKey, onSelect }: Props) {
                   </span>
                   {/* The exact tab name (payslip_0 vs payslip_1, ...), not
                       just the friendly badge above. This is more than a
-                      nice-to-have: Transaction ID + this exact tab name is
-                      this app's actual unique key for a row (see
-                      masterRowKey in types.ts) — Request ID was found to
-                      repeat across rows in real data, so it can't be
-                      trusted for that. Two cards sharing both a
-                      Transaction ID and this exact tab name are a genuine
-                      upstream duplicate (the one case even this can't
+                      nice-to-have: it's one third of this app's actual
+                      unique key for a row (see masterRowKey in types.ts —
+                      Transaction ID + Request ID + Document Type,
+                      together, not any one or two alone). Two cards can
+                      share a Transaction ID and still differ here
+                      (loan_0/loan_1), and two cards can share BOTH a
+                      Transaction ID and this exact tab name and still be
+                      genuinely different documents if their Request ID
+                      differs (found live — one transaction, two separate
+                      Request IDs, each with its own payslip_0). Only when
+                      all three match — Transaction ID, Request ID, AND
+                      this exact tab name — is it a genuine upstream
+                      duplicate (the one case masterRowKey can't
                       disambiguate), not an app bug. */}
                   <span
-                    title={`${row.documentType} — Request ID: ${row.requestId} (real data has shown this repeating across rows, so it's not what identifies this card)`}
+                    title={`${row.documentType} — Request ID: ${row.requestId} (part of this card's real identity together with Transaction ID + Document Type, but not reliably unique by itself — see types.ts)`}
                     style={{
                       fontFamily: 'var(--font-mono)',
                       fontSize: 9.5,

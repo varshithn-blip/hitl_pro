@@ -53,9 +53,10 @@ export function usePortal() {
   })
   const [search, setSearch] = useState('')
 
-  // Keyed by masterRowKey (Transaction ID + Document Type), not Request
-  // ID — see MasterRow.requestId's comment in types.ts for why Request ID
-  // can't be trusted to tell two rows apart.
+  // Keyed by masterRowKey (Transaction ID + Request ID + Document Type),
+  // not Request ID alone and not Transaction ID + Document Type alone —
+  // see MasterRow.requestId's comment in types.ts for the two separate
+  // live collisions that ruled each of those out.
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null)
   const [currentDoc, setCurrentDoc] = useState<OcrDocument | null>(null)
   const [draftSections, setDraftSections] = useState<OcrSection[] | null>(null)
@@ -183,10 +184,11 @@ export function usePortal() {
 
   // Default selection: first row of the filtered queue, whenever nothing
   // (or a since-filtered-out row) is selected. Every row — every
-  // Transaction ID + Document Type combination, whatever Request ID it
-  // shares with another row — is its own independent queue card, opened
-  // and submitted on its own; the queue list is the only way to move
-  // between them.
+  // masterRowKey (Transaction ID + Request ID + Document Type) — is its
+  // own independent queue card, opened and submitted on its own,
+  // regardless of what it shares with another row on any one or two of
+  // those three fields; the queue list is the only way to move between
+  // them.
   //
   // Deliberately depends on `filteredRows` only, not `selectedRowKey`,
   // using the functional setState form to read the current selection
@@ -204,11 +206,12 @@ export function usePortal() {
   const selectedRow = useMemo(() => masterRows.find((r) => masterRowKey(r) === selectedRowKey) ?? null, [masterRows, selectedRowKey])
 
   // --- Load the OCR document for whichever row is selected --------------
-  // masterRowKey (Transaction ID + Document Type) is the only safe key
-  // here — see OcrDocument.rowKey's comment in types.ts. Two rows can
-  // share a Request ID (found live — real data, not a hypothetical), so
-  // `currentDoc`/`draftSections` are cleared synchronously the instant
-  // `selectedRow` changes, before the async fetch even starts: there must
+  // masterRowKey (Transaction ID + Request ID + Document Type) is the
+  // only safe key here — see OcrDocument.rowKey's comment in types.ts.
+  // Two rows can share a Request ID, or share a Transaction ID *and*
+  // Document Type (found live — real data, not a hypothetical, in both
+  // cases), so `currentDoc`/`draftSections` are cleared synchronously the
+  // instant `selectedRow` changes, before the async fetch even starts: there must
   // be no window where the OLD document's data is still sitting there
   // labeled as if it belongs to the newly-selected row. `loadingDoc`
   // gates the UI (App.tsx shows a loading placeholder instead of stale

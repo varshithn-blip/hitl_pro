@@ -43,13 +43,17 @@ export interface MasterRow {
   rowIndex: number
   appId: string
   transactionId: string
-  /** NOT a reliable per-row identifier — originally assumed to be (per
-   * the discovery notes, "a UUID, one per document"), but found live:
-   * real data has multiple rows under one transaction, even different
-   * document types, sharing the exact identical Request ID. Never key or
-   * match a row on this alone — see `masterRowKey`. Still shown to
-   * reviewers as-is (it's a real sheet column), just not trusted as a
-   * unique key by this app. */
+  /** NOT a reliable per-row identifier ON ITS OWN — originally assumed to
+   * be (per the discovery notes, "a UUID, one per document"), but found
+   * live: real data has multiple rows under one transaction, even
+   * different document types, sharing the exact identical Request ID.
+   * Never key or match a row on this alone — see `masterRowKey`, which
+   * combines it with Transaction ID and Document Type instead (a second
+   * live case showed Transaction ID + Document Type alone isn't safe
+   * either: one transaction can carry more than one Request ID, each
+   * with its own payslip_0/payslip_1-style pair, so that pair collided
+   * too). Still shown to reviewers as-is (it's a real sheet column),
+   * just not trusted as a unique key by itself. */
   requestId: string
   imageUrl: LinkCell
   /** e.g. "loan_0", "loan_1", "payslip_0" — the exact OCR-tab name. */
@@ -70,17 +74,24 @@ export interface MasterRow {
 }
 
 /** The composite key this app actually treats as a row's unique identity
- * — Transaction ID + Document Type, NOT Request ID (see MasterRow.
- * requestId's comment for why). Document Type is reliably distinct across
- * the documents within one transaction (payslip_0 vs payslip_1, loan_0 vs
- * coe_0, ...), so the combination is what's safe to key selection, OCR
- * document identity, and local-state row updates on throughout this app.
+ * — Transaction ID + Request ID + Document Type, all three together, NOT
+ * any one or two of them alone (see MasterRow.requestId's comment for
+ * why neither Request ID nor Transaction ID + Document Type is safe by
+ * itself). Concretely, this guards against both live-confirmed
+ * collisions at once:
+ *   - Request ID repeating across different Document Types within one
+ *     Transaction ID (the original bug report) — Document Type in the
+ *     key tells those apart.
+ *   - Transaction ID + Document Type repeating because one transaction
+ *     carries more than one Request ID, each producing its own
+ *     Document Type (e.g. two separate payslip_0/payslip_1 pairs under
+ *     one Transaction ID) — Request ID in the key tells those apart.
  * The one case this still can't disambiguate is a genuine upstream
- * duplicate — the exact same document (same transaction, same type)
- * uploaded and processed twice — which has no reliable per-row
- * identifier at all in this data; see README. */
-export function masterRowKey(row: { transactionId: string; documentType: string }): string {
-  return `${row.transactionId}::${row.documentType}`
+ * duplicate — the exact same document (same transaction, same request,
+ * same type) uploaded and processed twice — which has no reliable
+ * per-row identifier at all in this data; see README. */
+export function masterRowKey(row: { transactionId: string; requestId: string; documentType: string }): string {
+  return `${row.transactionId}::${row.requestId}::${row.documentType}`
 }
 
 export const MASTER_COLUMNS = [
