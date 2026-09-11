@@ -190,18 +190,40 @@ export function QueueList({ rows, selectedRequestId, onSelect }: Props) {
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span
-                  style={{
-                    fontSize: 10.5,
-                    fontWeight: 600,
-                    padding: '2px 7px',
-                    borderRadius: 5,
-                    background: isDone ? badge.bg : 'oklch(93% 0.006 255)',
-                    color: isDone ? badge.fg : 'var(--text-secondary)',
-                  }}
-                >
-                  {badge.label}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                  <span
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      padding: '2px 7px',
+                      borderRadius: 5,
+                      background: isDone ? badge.bg : 'oklch(93% 0.006 255)',
+                      color: isDone ? badge.fg : 'var(--text-secondary)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {badge.label}
+                  </span>
+                  {/* The exact tab name (payslip_0 vs payslip_1, ...), not
+                      just the friendly badge above — two cards can share
+                      both a Transaction ID and a doc type (multiple pages
+                      of one document type, or a genuine duplicate upload)
+                      and look otherwise identical; this is what actually
+                      tells them apart at a glance. */}
+                  <span
+                    title={row.requestId}
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 9.5,
+                      color: 'var(--text-muted)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {row.documentType}
+                  </span>
+                </div>
                 <div
                   title={row.reviewer}
                   style={{

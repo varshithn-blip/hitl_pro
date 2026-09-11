@@ -87,7 +87,17 @@ real and clickable — only the data source is fake.
   instead of debugged further under time pressure). Two cards sharing a
   Transaction ID are still visually easy to spot side by side in the
   queue list — same ID text at the top of each card — a reviewer just
-  clicks between them like any other two rows.
+  clicks between them like any other two rows. Two cards can also share
+  the same Transaction ID *and* the same base document type (two pages of
+  one payslip, e.g. `payslip_0`/`payslip_1` — or, found live, an actual
+  upstream double-processing: the same page uploaded and OCR'd twice a
+  minute apart, producing two rows that are genuine duplicates, not just
+  look-alikes) — the friendly doc-type badge alone can't tell those
+  apart, so the queue card also shows the raw tab name (`payslip_0` vs
+  `payslip_1`) next to it. If two cards show the *exact same* raw tab
+  name for the same transaction, that's not an app bug — it's the
+  pipeline having genuinely processed that document twice, worth flagging
+  upstream rather than something this portal can reconcile on its own.
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary
