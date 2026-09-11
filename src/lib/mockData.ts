@@ -136,12 +136,38 @@ function toOcrDocument(spreadsheetId: string, tabTitle: string, gid: number, row
   return { spreadsheetId, tabTitle, gid, ...parseOcrRows(rows) }
 }
 
+/** Demo-mode stand-in for attachFieldValidation (ocrParser.ts) — in live
+ * mode, options come from the field's own cell's real data-validation
+ * rule; there's no live sheet to read here, so this hand-attaches a
+ * synthetic option list to one named field, for whichever docs have it.
+ * Exercises the same "suggestions, not a locked choice" UI in demo mode:
+ * note the existing OCR-extracted values below ("No Match | NA | 0",
+ * "San Carlos Sun Power Inc | Cat B | 1") deliberately don't match any of
+ * these options — that's the point, a real extracted value must stay
+ * visible and editable even when it doesn't match a suggestion. */
+function withFieldOptions(doc: OcrDocument, label: string, options: string[]): OcrDocument {
+  return {
+    ...doc,
+    sections: doc.sections.map((section) =>
+      section.kind === 'fields'
+        ? { ...section, fields: section.fields.map((f) => (f.label === label ? { ...f, validationOptions: options } : f)) }
+        : section,
+    ),
+  }
+}
+
+const COMPANY_CATEGORY_OPTIONS = ['Cat A', 'Cat B', 'Cat C', 'No Match']
+
 /** Keyed by `${transactionId}::${documentType}` — how App.tsx looks up
  * which OCR tab belongs to a given master-sheet row. */
 export const MOCK_OCR_DOCS: Record<string, OcrDocument> = {
-  'ETB-2029-4471::coe_0': toOcrDocument('mock-sheet-1', 'coe_0', 1001, COE_0_ROWS),
+  'ETB-2029-4471::coe_0': withFieldOptions(toOcrDocument('mock-sheet-1', 'coe_0', 1001, COE_0_ROWS), 'Company Category', COMPANY_CATEGORY_OPTIONS),
   'ETB-2029-4471::loan_0': toOcrDocument('mock-sheet-1', 'loan_0', 1002, LOAN_0_ROWS),
-  'NTB-8814-2093::payslip_0': toOcrDocument('mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
+  'NTB-8814-2093::payslip_0': withFieldOptions(
+    toOcrDocument('mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
+    'Company Category',
+    COMPANY_CATEGORY_OPTIONS,
+  ),
   'ETB-3357-6620::loan_0': toOcrDocument('mock-sheet-3', 'loan_0', 3001, LOAN_0_ROWS),
   'NTB-1145-9902::credit_0': toOcrDocument('mock-sheet-4', 'credit_0', 4001, CREDIT_0_ROWS),
   'ETB-7702-3384::loan_0': toOcrDocument('mock-sheet-5', 'loan_0', 5001, LOAN_0_ROWS),

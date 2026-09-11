@@ -89,6 +89,17 @@ export interface OcrField {
   remark?: string
   /** 1-based row number within the OCR tab, for write-back. */
   rowIndex: number
+  /** Live dropdown suggestions read off this field's own value cell's
+   * data-validation rule (e.g. Company Category), if that specific cell
+   * has one — see ocrParser.ts `attachFieldValidation`. Generic and
+   * per-field (not hardcoded to one field name): whichever OCR field
+   * happens to have a rule attached in the real sheet gets suggestions,
+   * automatically, with no code change needed. `null`/undefined means no
+   * rule was found — the field stays a plain free-text input either way,
+   * since the OCR-extracted value must stay editable even when it
+   * doesn't match any suggested option (this is suggestions, not a
+   * locked choice — see OcrEditor.tsx). */
+  validationOptions?: string[] | null
 }
 
 /** A repeating-table section, e.g. coe_0's "Salary Components". */

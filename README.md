@@ -79,7 +79,18 @@ real and clickable — only the data source is fake.
   plain "Fields" label rather than guessing or leaving it blank. Field-
   level remarks the OCR pipeline itself attaches (the sheet's optional
   3rd column) surface as an inline warning icon, full text on hover.
-  Every date-shaped or number-shaped OCR value gets written with a
+  Whichever OCR field's own value cell happens to have a Sheets
+  data-validation rule attached (Company Category, in practice — a
+  controlled/tokenized value, not free OCR text) gets live suggestions
+  read off that rule (`lib/ocrParser.ts` → `attachFieldValidation`, a
+  small "▾ SHEET" badge marking it), via a native `<input list>` +
+  `<datalist>` — **suggestions, not a locked dropdown**: it's still a
+  plain text field underneath, so an OCR-extracted value that doesn't
+  exactly match any of the sheet's options is never blocked or silently
+  reset, it just stays as-is and editable. This is generic, not hardcoded
+  to Company Category specifically — any field the OCR pipeline attaches
+  a rule to picks up suggestions automatically. Every date-shaped or
+  number-shaped OCR value gets written with a
   leading `'` (`lib/ocrParser.ts` → `forceTextIfDateOrNumeric`), forcing
   Sheets to store it as plain text instead of trying to auto-parse it —
   and, per explicit direction, this is **not** limited to fields the
@@ -273,6 +284,20 @@ verification pass, not as proven:
   sheet's placeholder text is never mistaken for an actual Approve/Reject
   choice a reviewer made (which would otherwise have let Submit fire
   without the reviewer ever picking one).
+- **Company Category live suggestions (`attachFieldValidation`) — genuinely
+  untested against a real OCR tab's cell.** Built on the working
+  assumption that the OCR pipeline attaches an actual Sheets
+  data-validation rule to that field's value cell (plausible — the master
+  spreadsheet's own notes describe other OCR fields, like Loan Type and
+  Coverage Period, as "strictly choose among the following only" codes,
+  and Company Category's real values look tokenized the same way — but
+  not confirmed by directly inspecting a live cell's validation rule, which
+  wasn't reachable with the tools available while building this). If it
+  turns out no such rule exists, the field just falls back to a plain
+  input with no "▾ SHEET" badge, exactly like any other field — self-
+  diagnosing the same way the rest of this app's sheet-driven dropdowns
+  are, so this either works visibly or fails obviously, nothing silent.
+  Worth a real check against a live document before relying on it.
 - **Auth** uses Google Identity Services' implicit token-client flow —
   no refresh token, so a session needs re-auth after the access token
   expires (~1 hour). Fine for a first pass; a longer-lived session would

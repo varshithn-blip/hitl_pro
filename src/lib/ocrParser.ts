@@ -1,4 +1,4 @@
-import type { CellUpdate } from './sheetsApi'
+import { extractValidationList, type CellUpdate, type GridCell } from './sheetsApi'
 import type { OcrDocument, OcrFieldsSection, OcrSection, OcrTableSection } from './types'
 
 // Parses one OCR tab's raw rows into sections. This is a GENERIC,
@@ -247,4 +247,42 @@ export function buildOcrCellUpdates(
     values: [e.cells.map(forceTextIfDateOrNumeric)],
   }))
   return [...fieldUpdates, ...tableUpdates]
+}
+
+/** Whichever OCR field's own value cell (column B) happens to have a
+ * Sheets data-validation rule attached — e.g. Company Category, which is
+ * a controlled/tokenized value in practice, not free OCR text — gets
+ * live suggestions pulled from the sheet. Generic on purpose: this isn't
+ * hardcoded to "Company Category" specifically, so any field the OCR
+ * pipeline later attaches a dropdown rule to picks it up automatically,
+ * matching this parser's existing "adapts to whatever the sheet actually
+ * has" design. Table-section cells aren't covered by this — no known
+ * case needed it yet.
+ *
+ * Deliberately suggestions, not a locked `<select>`: an OCR-extracted
+ * value that doesn't exactly match one of the rule's options must still
+ * show up and stay editable (see OcrField.validationOptions and
+ * OcrEditor.tsx) rather than getting silently reset or hidden. `grid`
+ * must be the same range parseOcrRows was given (so row numbers line
+ * up); a field with no rule on its cell gets `validationOptions: null`
+ * and renders exactly as a plain input, unchanged. */
+export async function attachFieldValidation(
+  sections: OcrSection[],
+  grid: GridCell[][],
+  spreadsheetId: string,
+  accessToken: string,
+): Promise<OcrSection[]> {
+  return Promise.all(
+    sections.map(async (section): Promise<OcrSection> => {
+      if (section.kind !== 'fields') return section
+      const fields = await Promise.all(
+        section.fields.map(async (field) => {
+          const valueCell = grid[field.rowIndex - 1]?.[1]
+          const validationOptions = valueCell ? await extractValidationList([valueCell], spreadsheetId, accessToken) : null
+          return { ...field, validationOptions }
+        }),
+      )
+      return { ...section, fields }
+    }),
+  )
 }

@@ -66,23 +66,47 @@ function FieldsSection({
     <div>
       <SectionTitle>{section.title || 'Fields'}</SectionTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {section.fields.map((field, fIdx) => (
-          <div key={fIdx} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5, width: 124, flexShrink: 0 }}>
-              <span style={{ fontSize: 10.5, color: 'var(--text-secondary)' }}>{field.label}</span>
-              {field.remark && field.remark.toLowerCase() !== 'ok' && !field.remark.toLowerCase().endsWith(' ok') && (
-                <span title={field.remark} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9.5, fontWeight: 600, color: 'var(--warning)' }}>
-                  <AlertTriangle size={11} />
-                </span>
+        {section.fields.map((field, fIdx) => {
+          const hasSuggestions = !!field.validationOptions?.length
+          const datalistId = hasSuggestions ? `ocr-field-options-${field.rowIndex}` : undefined
+          return (
+            <div key={fIdx} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5, width: 124, flexShrink: 0 }}>
+                <span style={{ fontSize: 10.5, color: 'var(--text-secondary)' }}>{field.label}</span>
+                {field.remark && field.remark.toLowerCase() !== 'ok' && !field.remark.toLowerCase().endsWith(' ok') && (
+                  <span title={field.remark} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9.5, fontWeight: 600, color: 'var(--warning)' }}>
+                    <AlertTriangle size={11} />
+                  </span>
+                )}
+                {hasSuggestions && (
+                  <span
+                    title={`${field.validationOptions!.length} suggestion${field.validationOptions!.length === 1 ? '' : 's'} read live from this cell's dropdown in the sheet — still a free-text field, so a value that doesn't match any of them stays as-is.`}
+                    style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--accent)', cursor: 'help' }}
+                  >
+                    ▾ SHEET
+                  </span>
+                )}
+              </div>
+              {/* Suggestions, not a locked choice — a plain text input with
+                  an optional <datalist>, so an OCR value that doesn't match
+                  any live option is never blocked or silently reset (see
+                  OcrField.validationOptions and attachFieldValidation). */}
+              <input
+                list={datalistId}
+                value={field.value}
+                onChange={(e) => onFieldChange(fIdx, e.target.value)}
+                style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0 }}
+              />
+              {hasSuggestions && (
+                <datalist id={datalistId}>
+                  {field.validationOptions!.map((opt) => (
+                    <option key={opt} value={opt} />
+                  ))}
+                </datalist>
               )}
             </div>
-            <input
-              value={field.value}
-              onChange={(e) => onFieldChange(fIdx, e.target.value)}
-              style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0 }}
-            />
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

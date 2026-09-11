@@ -6,7 +6,7 @@
 // blank-valued field both come back as one-cell rows) is exactly the kind
 // of thing worth re-checking by hand against real sheet data once it's
 // available. Run with `npm run verify:parser`.
-import { buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
+import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
 import type { OcrSection } from '../src/lib/types'
@@ -214,13 +214,76 @@ console.log('\n=== parseRejectionReasonRefRows (real "Ref" tab content) ===')
   }
 }
 
+// Sanity check for attachFieldValidation: a field whose value cell (column
+// B) carries a ONE_OF_LIST data-validation rule (Company Category, in
+// practice) gets that rule's options attached; an ordinary field with no
+// rule on its cell is untouched (null, not an empty array — so the UI can
+// tell "checked, nothing there" apart from "not checked yet"). Uses
+// ONE_OF_LIST specifically because it needs no network call to resolve,
+// unlike ONE_OF_RANGE (see extractValidationList in sheetsApi.ts) — this
+// stays a same offline check like the rest of this script.
+console.log("\n=== attachFieldValidation (Company-Category-style live suggestions) ===")
+await (async () => {
+  const sections: OcrSection[] = [
+    {
+      kind: 'fields',
+      title: '',
+      fields: [
+        { label: 'Employer Name', value: 'San Carlos Sun Power Inc', rowIndex: 7 },
+        { label: 'Company Category', value: 'San Carlos Sun Power Inc | Cat B | 1', rowIndex: 8 },
+      ],
+    },
+  ]
+  const grid = [
+    [], // row 1
+    [], // row 2
+    [], // row 3
+    [], // row 4
+    [], // row 5
+    [], // row 6
+    [{ formattedValue: 'Employer Name' }, { formattedValue: 'San Carlos Sun Power Inc' }], // row 7 - no rule
+    [
+      { formattedValue: 'Company Category' },
+      {
+        formattedValue: 'San Carlos Sun Power Inc | Cat B | 1',
+        dataValidation: { condition: { type: 'ONE_OF_LIST', values: [{ userEnteredValue: 'Cat A' }, { userEnteredValue: 'Cat B' }, { userEnteredValue: 'No Match' }] } },
+      },
+    ], // row 8 - has a rule
+  ]
+
+  const result = await attachFieldValidation(sections, grid as any, 'fake-spreadsheet-id', 'fake-token')
+  const fields = result[0].kind === 'fields' ? result[0].fields : []
+  let fail = 0
+
+  const employer = fields.find((f) => f.label === 'Employer Name')
+  const ok1 = employer?.validationOptions == null
+  if (!ok1) fail++
+  console.log(`  ${ok1 ? 'ok  ' : 'FAIL'} "Employer Name" (no rule on its cell) has no options - got ${JSON.stringify(employer?.validationOptions)}`)
+
+  const category = fields.find((f) => f.label === 'Company Category')
+  const ok2 = JSON.stringify(category?.validationOptions) === JSON.stringify(['Cat A', 'Cat B', 'No Match'])
+  if (!ok2) fail++
+  console.log(`  ${ok2 ? 'ok  ' : 'FAIL'} "Company Category" gets its cell's live options - got ${JSON.stringify(category?.validationOptions)}`)
+
+  const ok3 = category?.value === 'San Carlos Sun Power Inc | Cat B | 1'
+  if (!ok3) fail++
+  console.log(`  ${ok3 ? 'ok  ' : 'FAIL'} "Company Category" keeps its real OCR value even though it doesn't match any option - got "${category?.value}"`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} attachFieldValidation case(s) failed.`)
+    process.exitCode = 1
+  }
+})()
+
 for (const [key, doc] of Object.entries(MOCK_OCR_DOCS)) {
   console.log(`\n=== ${key} (txn=${doc.transactionId}, tab=${doc.tabTitle}) ===`)
   for (const section of doc.sections) {
     if (section.kind === 'fields') {
       console.log(`  [fields] "${section.title}" - ${section.fields.length} fields`)
       for (const f of section.fields) {
-        console.log(`      row${f.rowIndex}: ${f.label} = "${f.value}"${f.remark ? ` (remark: ${f.remark})` : ''}`)
+        console.log(
+          `      row${f.rowIndex}: ${f.label} = "${f.value}"${f.remark ? ` (remark: ${f.remark})` : ''}${f.validationOptions?.length ? ` (sheet options: ${f.validationOptions.join(', ')})` : ''}`,
+        )
       }
     } else {
       console.log(`  [table]  "${section.title}" - columns: ${section.columns.join(' | ')}`)

@@ -4,8 +4,8 @@ import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
-import { buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
-import { batchUpdateValues, getValues, listTabs } from '../lib/sheetsApi'
+import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
+import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
 import { mergeTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
@@ -214,12 +214,21 @@ export function usePortal() {
     setLoadingDoc(true)
     ;(async () => {
       try {
-        const parsed = parseSheetUrlHref(selectedRow.sheetUrl.href)
-        if (!parsed) throw new Error('Could not resolve the OCR sheet link for this row — see README known gaps.')
+        const parsedUrl = parseSheetUrlHref(selectedRow.sheetUrl.href)
+        if (!parsedUrl) throw new Error('Could not resolve the OCR sheet link for this row — see README known gaps.')
         const quotedTab = `'${selectedRow.documentType.replace(/'/g, "''")}'`
-        const rows = await getValues(parsed.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken)
+        // getGridData, not the lighter getValues — needed for per-cell
+        // dataValidation so a field like Company Category can offer live
+        // suggestions (see attachFieldValidation). OCR tabs are small
+        // (a few dozen rows), so this doesn't carry the cost that made
+        // the master sheet's row list switch away from it.
+        const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken)
         if (cancelled) return
-        const doc: OcrDocument = { spreadsheetId: parsed.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsed.gid, ...parseOcrRows(rows) }
+        const rows = grid.map((row) => row.map((cell) => cell?.formattedValue ?? ''))
+        const parsedDoc = parseOcrRows(rows)
+        const sections = await attachFieldValidation(parsedDoc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
+        if (cancelled) return
+        const doc: OcrDocument = { spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
         setCurrentDoc(doc)
         setDraftSections(structuredClone(doc.sections))
       } catch (err) {
