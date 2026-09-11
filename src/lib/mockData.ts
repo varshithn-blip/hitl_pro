@@ -80,6 +80,43 @@ const PAYSLIP_0_ROWS: string[][] = [
   row('Net Salary', '40048.66'),
 ]
 
+// Two genuinely different pages of ONE payslip, sharing a Transaction ID
+// with PAYSLIP_0_ROWS above (same reviewer scenario reported live: two
+// queue cards, same Transaction ID, same base doc type, that must stay
+// fully independent — different OCR content, and editing/submitting one
+// must never touch the other's cells). Deliberately different Coverage
+// Period / Basic Pay from payslip_0 so a test can tell them apart.
+const PAYSLIP_1_ROWS: string[][] = [
+  row('HyperVergeTransaction ID', 'NTB-8814-2093'),
+  row('Customer ID', 'rgitid'),
+  row('Error'),
+  [],
+  row('Fields', 'Values'),
+  row('Salary Period Start Date', '16/08/2026'),
+  row('Salary Period End Date', '31/08/2026'),
+  row('Pay Date'),
+  row('Duration', '16'),
+  row('Coverage Period', 'S'),
+  row('Employee Name', 'Ronaldo B. Mijares'),
+  row('Employer Name', 'GEBS Corp'),
+  row('Company Category', 'No Match | NA | 0'),
+  row('Employee ID', '1921-010'),
+  row('Employee Designation', "Business Dev't & IT Head"),
+  row('SSS Number'),
+  row('TIN Number'),
+  row('PhilHealth Number'),
+  row('Tax Status'),
+  row('Salary Details'),
+  row('Fields', 'Values'),
+  row('Currency', 'PHP'),
+  row('Basic Pay', '32000'),
+  row('Variable Pay'),
+  row('Gross Salary', '43200.00'),
+  row('SSS Premium'),
+  row('PhilHealth Premium', '1500'),
+  row('Net Salary', '41700.00'),
+]
+
 const CREDIT_0_ROWS: string[][] = [
   row('HyperVergeTransaction ID', 'NTB-1145-9902'),
   row('Customer ID', 'rgitid'),
@@ -132,8 +169,8 @@ const COE_0_ROWS: string[][] = [
   row('Housing Allowance', '4500', 'Monthly'),
 ]
 
-function toOcrDocument(spreadsheetId: string, tabTitle: string, gid: number, rows: string[][]): OcrDocument {
-  return { spreadsheetId, tabTitle, gid, ...parseOcrRows(rows) }
+function toOcrDocument(requestId: string, spreadsheetId: string, tabTitle: string, gid: number, rows: string[][]): OcrDocument {
+  return { requestId, spreadsheetId, tabTitle, gid, ...parseOcrRows(rows) }
 }
 
 /** Demo-mode stand-in for attachFieldValidation (ocrParser.ts) — in live
@@ -158,20 +195,35 @@ function withFieldOptions(doc: OcrDocument, label: string, options: string[]): O
 
 const COMPANY_CATEGORY_OPTIONS = ['Cat A', 'Cat B', 'Cat C', 'No Match']
 
-/** Keyed by `${transactionId}::${documentType}` — how App.tsx looks up
- * which OCR tab belongs to a given master-sheet row. */
+/** Keyed by Request ID — the same key MasterRow/OcrDocument use everywhere
+ * else, deliberately not `${transactionId}::${documentType}` (what this
+ * used to be keyed by). That composite key breaks down exactly when it
+ * matters most: two rows can share both a Transaction ID and a base doc
+ * type (the coe_0 pair below is fine — different types — but
+ * `NTB-8814-2093`'s two payslip rows below share transactionId AND
+ * documentType; a transactionId+documentType key would collide them onto
+ * one entry, exactly the class of bug reported live — see OcrDocument's
+ * requestId comment in types.ts). */
 export const MOCK_OCR_DOCS: Record<string, OcrDocument> = {
-  'ETB-2029-4471::coe_0': withFieldOptions(toOcrDocument('mock-sheet-1', 'coe_0', 1001, COE_0_ROWS), 'Company Category', COMPANY_CATEGORY_OPTIONS),
-  'ETB-2029-4471::loan_0': toOcrDocument('mock-sheet-1', 'loan_0', 1002, LOAN_0_ROWS),
-  'NTB-8814-2093::payslip_0': withFieldOptions(
-    toOcrDocument('mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
+  '5f84b481-51f0-4d3a-8dd2-11f54c20db1b': withFieldOptions(
+    toOcrDocument('5f84b481-51f0-4d3a-8dd2-11f54c20db1b', 'mock-sheet-1', 'coe_0', 1001, COE_0_ROWS),
     'Company Category',
     COMPANY_CATEGORY_OPTIONS,
   ),
-  'ETB-3357-6620::loan_0': toOcrDocument('mock-sheet-3', 'loan_0', 3001, LOAN_0_ROWS),
-  'NTB-1145-9902::credit_0': toOcrDocument('mock-sheet-4', 'credit_0', 4001, CREDIT_0_ROWS),
-  'ETB-7702-3384::loan_0': toOcrDocument('mock-sheet-5', 'loan_0', 5001, LOAN_0_ROWS),
-  'NTB-5561-0037::payslip_0': toOcrDocument('mock-sheet-6', 'payslip_0', 6001, PAYSLIP_0_ROWS),
+  'a1b7c9d0-1111-4a2b-9c3d-4e5f60718293': toOcrDocument('a1b7c9d0-1111-4a2b-9c3d-4e5f60718293', 'mock-sheet-1', 'loan_0', 1002, LOAN_0_ROWS),
+  '1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660': withFieldOptions(
+    toOcrDocument('1b80bc3f-c0b5-4631-b1d1-cc1dc0f9f660', 'mock-sheet-2', 'payslip_0', 2001, PAYSLIP_0_ROWS),
+    'Company Category',
+    COMPANY_CATEGORY_OPTIONS,
+  ),
+  // Second page of the SAME payslip as above — same Transaction ID
+  // (NTB-8814-2093) and same base doc type (payslip), different Request
+  // ID. This is the pairing this file exists to guard against.
+  'd4e5f6a7-2222-4b3c-8d4e-5f6071829304': toOcrDocument('d4e5f6a7-2222-4b3c-8d4e-5f6071829304', 'mock-sheet-2', 'payslip_1', 2002, PAYSLIP_1_ROWS),
+  'f6389128-9d36-4fc8-bd2d-55d700d3d347': toOcrDocument('f6389128-9d36-4fc8-bd2d-55d700d3d347', 'mock-sheet-3', 'loan_0', 3001, LOAN_0_ROWS),
+  'b68bbf95-48fd-49de-a92a-558d48f072f3': toOcrDocument('b68bbf95-48fd-49de-a92a-558d48f072f3', 'mock-sheet-4', 'credit_0', 4001, CREDIT_0_ROWS),
+  '832dfff1-7d80-4986-a769-2443a106d79c': toOcrDocument('832dfff1-7d80-4986-a769-2443a106d79c', 'mock-sheet-5', 'loan_0', 5001, LOAN_0_ROWS),
+  '7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a': toOcrDocument('7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a', 'mock-sheet-6', 'payslip_0', 6001, PAYSLIP_0_ROWS),
 }
 
 function linkCell(label: string): { label: string; href: string | null } {
@@ -244,6 +296,25 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
   {
     rowIndex: 5,
     appId: 'rgitid',
+    transactionId: 'NTB-8814-2093',
+    requestId: 'd4e5f6a7-2222-4b3c-8d4e-5f6071829304',
+    imageUrl: linkCell('File Link'),
+    documentType: 'payslip_1',
+    sheetUrl: linkCell('mock-sheet-2'),
+    category: '',
+    rejectionReason: '',
+    status: '',
+    fraudReason: [],
+    reviewer: 'Maria Ramos',
+    apiCalled: '',
+    driveLink: linkCell('Drive Link'),
+    flags: '',
+    reclassified: '',
+    processed: '',
+  },
+  {
+    rowIndex: 6,
+    appId: 'rgitid',
     transactionId: 'ETB-3357-6620',
     requestId: 'f6389128-9d36-4fc8-bd2d-55d700d3d347',
     imageUrl: linkCell('File Link'),
@@ -261,7 +332,7 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     processed: '',
   },
   {
-    rowIndex: 6,
+    rowIndex: 7,
     appId: 'rgitid',
     transactionId: 'NTB-1145-9902',
     requestId: 'b68bbf95-48fd-49de-a92a-558d48f072f3',
@@ -280,7 +351,7 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     processed: '',
   },
   {
-    rowIndex: 7,
+    rowIndex: 8,
     appId: 'rgitid',
     transactionId: 'ETB-7702-3384',
     requestId: '832dfff1-7d80-4986-a769-2443a106d79c',
@@ -299,7 +370,7 @@ export const MOCK_MASTER_ROWS: MasterRow[] = [
     processed: '',
   },
   {
-    rowIndex: 8,
+    rowIndex: 9,
     appId: 'rgitid',
     transactionId: 'NTB-5561-0037',
     requestId: '7c1fd6e5-1368-4fa1-b9e9-9fdaf45c567a',

@@ -27,9 +27,6 @@ function seedDraft(row: MasterRow): DecisionDraft {
   }
 }
 
-function ocrDocKey(transactionId: string, documentType: string) {
-  return `${transactionId}::${documentType}`
-}
 
 type SyncState = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -203,17 +200,29 @@ export function usePortal() {
   const selectedRow = useMemo(() => masterRows.find((r) => r.requestId === selectedRequestId) ?? null, [masterRows, selectedRequestId])
 
   // --- Load the OCR document for whichever row is selected --------------
+  // Request ID is the only safe key here — see OcrDocument.requestId's
+  // comment in types.ts. Two rows can share a Transaction ID and even a
+  // base doc type (two pages of one payslip, or — found live — an
+  // upstream double-processing), so `currentDoc`/`draftSections` are
+  // cleared synchronously the instant `selectedRow` changes, before the
+  // async fetch even starts: there must be no window where the OLD
+  // document's data is still sitting there labeled as if it belongs to
+  // the newly-selected row. `loadingDoc` gates the UI (App.tsx shows a
+  // loading placeholder instead of stale content), and submit() has its
+  // own independent requestId check as a second guard against a race
+  // where Submit gets clicked before this fetch has caught up.
   useEffect(() => {
+    setCurrentDoc(null)
+    setDraftSections(null)
+
     if (!selectedRow) {
-      setCurrentDoc(null)
-      setDraftSections(null)
       setDecisionDraft(EMPTY_DRAFT)
       return
     }
     setDecisionDraft(seedDraft(selectedRow))
 
     if (DEMO_MODE) {
-      const doc = MOCK_OCR_DOCS[ocrDocKey(selectedRow.transactionId, selectedRow.documentType)] ?? null
+      const doc = MOCK_OCR_DOCS[selectedRow.requestId] ?? null
       setCurrentDoc(doc)
       setDraftSections(doc ? structuredClone(doc.sections) : null)
       return
@@ -238,7 +247,7 @@ export function usePortal() {
         const parsedDoc = parseOcrRows(rows)
         const sections = await attachFieldValidation(parsedDoc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
         if (cancelled) return
-        const doc: OcrDocument = { spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
+        const doc: OcrDocument = { requestId: selectedRow.requestId, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
         setCurrentDoc(doc)
         setDraftSections(structuredClone(doc.sections))
       } catch (err) {
@@ -361,6 +370,21 @@ export function usePortal() {
     // Category and Status are independent — see DecisionDraft's comments —
     // so both must be explicitly set; neither is derived from the other.
     if (!selectedRow || decisionDraft.category === '' || decisionDraft.status === '') return
+    // Defense in depth against the OCR-doc-loading race (the OCR-load
+    // effect clears currentDoc synchronously on every selection change,
+    // so this should be unreachable in practice — but if the fetch for
+    // the currently selected row hasn't caught up yet, or currentDoc
+    // somehow still belongs to a previous selection, refuse to submit
+    // rather than risk writing the OCR edits into the wrong document's
+    // tab. Request ID is the only thing that can answer "does this OCR
+    // data actually belong to this row?" — see OcrDocument.requestId. A
+    // currentDoc that's simply null (the read genuinely failed) is fine
+    // to proceed past — that's an intentional decision-only submit.
+    if (loadingDoc || (currentDoc !== null && currentDoc.requestId !== selectedRow.requestId)) {
+      setSyncState('error')
+      setSyncMessage('Still loading this document — try Submit again in a moment.')
+      return
+    }
     const category: CategoryValue = decisionDraft.category
     const decision = {
       category,
@@ -402,7 +426,7 @@ export function usePortal() {
       setSyncState('error')
       setSyncMessage(err instanceof Error ? err.message : 'Save failed')
     }
-  }, [selectedRow, decisionDraft, filters.date, currentDoc, draftSections, filteredRows, user])
+  }, [selectedRow, decisionDraft, filters.date, currentDoc, draftSections, filteredRows, user, loadingDoc])
 
   return {
     demoMode: DEMO_MODE,

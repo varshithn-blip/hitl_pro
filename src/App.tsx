@@ -88,6 +88,7 @@ export default function App() {
                       onChange={p.setDecisionDraft}
                       onSubmit={p.submit}
                       submitting={p.syncState === 'saving'}
+                      loadingDoc={p.loadingDoc}
                     />
                   )}
                 </div>

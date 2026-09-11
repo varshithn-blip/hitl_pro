@@ -11,6 +11,11 @@ interface Props {
   onChange: (next: DecisionDraft) => void
   onSubmit: () => void
   submitting: boolean
+  /** True while the OCR document for the currently-selected row is still
+   * being fetched. Submitting during this window would race the fetch —
+   * see usePortal.ts submit()'s own requestId guard for why this must be
+   * blocked here too, not just relied on there. */
+  loadingDoc: boolean
 }
 
 const CATEGORY_OPTIONS: { value: CategoryValue; label: string; color: string }[] = [
@@ -64,7 +69,7 @@ const selectBoxStyle: React.CSSProperties = {
   background: 'white',
 }
 
-export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmit, submitting }: Props) {
+export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmit, submitting, loadingDoc }: Props) {
   const docType = baseDocType(documentType)
   const reasons = taxonomy.rejectionReasonsByDocType[docType] ?? []
   const needsReason = draft.status === 'Manually Rejected'
@@ -72,7 +77,13 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
   // it can't be Approved. Rejecting it (or leaving the decision open) are
   // the only valid outcomes.
   const isIncomplete = draft.category === 'Incomplete'
-  const canSubmit = draft.category !== '' && draft.status !== '' && !(isIncomplete && draft.status === 'Manually Approved') && (!needsReason || draft.rejectionReason !== '') && !submitting
+  const canSubmit =
+    draft.category !== '' &&
+    draft.status !== '' &&
+    !(isIncomplete && draft.status === 'Manually Approved') &&
+    (!needsReason || draft.rejectionReason !== '') &&
+    !submitting &&
+    !loadingDoc
 
   return (
     <div
@@ -233,8 +244,8 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
           marginTop: 2,
         }}
       >
-        {submitting ? 'Saving…' : 'Submit & Next'}
-        {!submitting && <ArrowRight size={15} />}
+        {submitting ? 'Saving…' : loadingDoc ? 'Loading document…' : 'Submit & Next'}
+        {!submitting && !loadingDoc && <ArrowRight size={15} />}
       </button>
       <span style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-muted)' }}>Saves to the master sheet + OCR sheet instantly</span>
     </div>

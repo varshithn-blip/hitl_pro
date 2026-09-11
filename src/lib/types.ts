@@ -122,6 +122,15 @@ export type OcrSection = OcrFieldsSection | OcrTableSection
 /** The parsed contents of one OCR tab (one document within a transaction's
  * per-transaction OCR spreadsheet). */
 export interface OcrDocument {
+  /** The master-row Request ID this OCR document was loaded for — the
+   * single source of truth for "which queue card does this data belong
+   * to". Transaction ID is NOT a safe stand-in: two rows can (and, found
+   * live, sometimes genuinely do) share one Transaction ID — a legitimate
+   * multi-page document, or an upstream double-processing — so anything
+   * that needs to know "is this still the document the reviewer is
+   * looking at" must compare requestId, never transactionId/documentType.
+   * See usePortal.ts's submit() for where this is actually enforced. */
+  requestId: string
   spreadsheetId: string
   tabTitle: string
   gid: number

@@ -98,6 +98,22 @@ real and clickable — only the data source is fake.
   name for the same transaction, that's not an app bug — it's the
   pipeline having genuinely processed that document twice, worth flagging
   upstream rather than something this portal can reconcile on its own.
+
+  **Request ID is the one identifier this app treats as safe to key
+  anything on — Transaction ID never is, not even combined with document
+  type.** This was tightened after the exact case above surfaced live:
+  `OcrDocument` now carries the `requestId` it was loaded for, and every
+  place that resolves or caches "which document is this" (demo mode's
+  fixture lookup, the live OCR fetch) is keyed by it. The OCR-load effect
+  clears `currentDoc`/`draftSections` synchronously the instant the
+  selected row changes — before the async fetch even starts — so there's
+  no window where a previous document's data sits on screen mislabeled as
+  the new selection while the real fetch is still in flight; `submit()`
+  independently refuses to run (and the Submit button disables, showing
+  "Loading document…") unless the currently loaded OCR document's
+  `requestId` actually matches the selected row, rather than either
+  silently skipping the OCR write-back or, worse, writing it into a
+  different document's tab.
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary

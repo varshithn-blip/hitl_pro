@@ -69,7 +69,7 @@ function looksLikeHeaderRow(row: string[], nextRow: string[] | undefined): boole
   return false
 }
 
-export function parseOcrRows(rows: string[][]): Omit<OcrDocument, 'spreadsheetId' | 'tabTitle' | 'gid'> {
+export function parseOcrRows(rows: string[][]): Omit<OcrDocument, 'requestId' | 'spreadsheetId' | 'tabTitle' | 'gid'> {
   const transactionId = rows[0]?.[1] ?? ''
   const customerId = rows[1]?.[1] ?? ''
   const error = rows[2]?.[1] ?? ''
