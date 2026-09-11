@@ -64,23 +64,22 @@ function FieldsSection({
 }) {
   return (
     <div>
-      <SectionTitle>{section.title || 'Document Details'}</SectionTitle>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 12px' }}>
+      <SectionTitle>{section.title || 'Fields'}</SectionTitle>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {section.fields.map((field, fIdx) => (
-          <div key={fIdx} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <div key={fIdx} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5, width: 124, flexShrink: 0 }}>
               <span style={{ fontSize: 10.5, color: 'var(--text-secondary)' }}>{field.label}</span>
               {field.remark && field.remark.toLowerCase() !== 'ok' && !field.remark.toLowerCase().endsWith(' ok') && (
                 <span title={field.remark} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9.5, fontWeight: 600, color: 'var(--warning)' }}>
                   <AlertTriangle size={11} />
-                  {field.remark}
                 </span>
               )}
             </div>
             <input
               value={field.value}
               onChange={(e) => onFieldChange(fIdx, e.target.value)}
-              style={{ ...fieldBoxStyle, padding: '7px 9px' }}
+              style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0 }}
             />
           </div>
         ))}

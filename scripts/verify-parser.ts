@@ -6,7 +6,7 @@
 // blank-valued field both come back as one-cell rows) is exactly the kind
 // of thing worth re-checking by hand against real sheet data once it's
 // available. Run with `npm run verify:parser`.
-import { buildFieldEdits, forceTextIfDateOrNumeric } from '../src/lib/ocrParser'
+import { buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
 import type { OcrSection } from '../src/lib/types'
@@ -44,6 +44,57 @@ for (const [value, shouldForce] of FORCE_TEXT_CASES) {
 if (forceTextFailures > 0) {
   console.log(`\n${forceTextFailures} forceTextIfDateOrNumeric case(s) failed.`)
   process.exitCode = 1
+}
+
+// Regression test for a real production bug: a field whose OCR value came
+// back blank (a 1-cell row, indistinguishable in shape from a section
+// title) sitting right before an ORDINARY text field (also a plain
+// "label, value" row, same shape as a table header) used to get misread
+// as "this blank field is a section title, and the field after it is a
+// table header" — silently eating both real fields (one becomes an
+// uneditable table column header, the other becomes trapped as a cell in
+// a bogus "row") and surfacing as a garbled table with an Add row button
+// and random-looking column names. Reproduces the exact shape that
+// triggered it: Employee Designation (blank) directly followed by
+// Status of Employment / Currency, two more plain text fields.
+console.log('\n=== parseOcrRows (blank-field-before-ordinary-field regression) ===')
+{
+  const rows = [
+    ['HyperVergeTransaction ID', 'ETB-TEST-0001'],
+    ['Customer ID', 'rgitid'],
+    ['Error', ''],
+    ['Fields', 'Values'],
+    ['Employee Name', 'Julian Paolo E. Caraballe'],
+    ['Employee Designation'], // blank OCR value - the false-positive trigger
+    ['Status of Employment', 'Present'], // ordinary text field - used to be misread as a table header
+    ['Currency', 'PHP'], // ordinary text field - used to be misread as a table row
+  ]
+  const doc = parseOcrRows(rows)
+  let fail = 0
+
+  const ok1 = doc.sections.length === 1 && doc.sections[0].kind === 'fields'
+  if (!ok1) fail++
+  console.log(`  ${ok1 ? 'ok  ' : 'FAIL'} exactly one fields section (no bogus table section created) - got ${doc.sections.length} section(s): ${doc.sections.map((s) => `${s.kind}:"${s.title}"`).join(', ')}`)
+
+  if (doc.sections[0]?.kind === 'fields') {
+    const labels = doc.sections[0].fields.map((f) => f.label)
+    const expected = ['Employee Name', 'Employee Designation', 'Status of Employment', 'Currency']
+    const ok2 = JSON.stringify(labels) === JSON.stringify(expected)
+    if (!ok2) fail++
+    console.log(`  ${ok2 ? 'ok  ' : 'FAIL'} all 4 fields present and editable, in order - got [${labels.join(', ')}]`)
+
+    const designation = doc.sections[0].fields.find((f) => f.label === 'Employee Designation')
+    const ok3 = designation?.value === ''
+    if (!ok3) fail++
+    console.log(`  ${ok3 ? 'ok  ' : 'FAIL'} "Employee Designation" kept as a field with its real (blank) value - got ${JSON.stringify(designation)}`)
+  } else {
+    fail++
+  }
+
+  if (fail > 0) {
+    console.log(`\n${fail} parseOcrRows regression case(s) failed.`)
+    process.exitCode = 1
+  }
 }
 
 // Sanity check for buildFieldEdits: a reviewer edits exactly one

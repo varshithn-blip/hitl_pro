@@ -72,8 +72,13 @@ real and clickable — only the data source is fake.
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary
-  Components"). Field-level remarks the OCR pipeline itself attaches
-  (the sheet's optional 3rd column) surface as inline warning badges.
+  Components"). Every field is editable — a label column on the left
+  (narrow, fixed-width) and a wider input on the right, one field per
+  row, so the input has the room. An untitled section (the common case —
+  most OCR tabs' first block has no section header of its own) shows a
+  plain "Fields" label rather than guessing or leaving it blank. Field-
+  level remarks the OCR pipeline itself attaches (the sheet's optional
+  3rd column) surface as an inline warning icon, full text on hover.
   Every date-shaped or number-shaped OCR value gets written with a
   leading `'` (`lib/ocrParser.ts` → `forceTextIfDateOrNumeric`), forcing
   Sheets to store it as plain text instead of trying to auto-parse it —
@@ -218,6 +223,28 @@ verification pass, not as proven:
   but not against a live API read — Sheets' row-truncation behavior
   (trailing empty cells dropped) is assumed to match what was observed
   through the Drive content-reading tool used for discovery.
+
+  **Found live, and fixed:** `looksLikeHeaderRow`'s table-header guess used
+  to trust *any* non-blank row as "looks like a table header, so whatever
+  came before it must be a section title" — but an ordinary field/value
+  row (`"Status of Employment", "Present"`) has that exact same shape. So
+  a real field whose OCR value came back blank (an unavoidable one-cell
+  row — see the parser's module comment) sitting right before another
+  plain text field got misread as a section title, with the field after
+  it misread as a bogus table header. Symptom in the UI: a field silently
+  vanishing from the form (its label eaten as a fake section "title")
+  right next to a garbled table with an Add row button and
+  random-looking column names — a real field's name, sitting where a
+  column header should be, is never editable (headers are always plain
+  text, never inputs), which is what made this look like "some fields
+  just can't be edited." Now requires the row after the candidate header
+  to actually look like a table's first data row (2+ cells, at least one
+  numeric-looking, per the disambiguation this file already documented
+  but never actually implemented) rather than merely non-blank — an
+  ordinary two-field sequence essentially never has a numeric-looking
+  cell in the second field, so it's no longer mistaken for one. Covered
+  by a dedicated regression case in `verify:parser` reproducing the exact
+  row shape that triggered it.
 - **Newly-added Salary-Components-style table rows aren't written back
   yet.** "Add row" is fully functional in the UI (and included in what a
   submit tries to save), but only edits to *existing* sheet rows

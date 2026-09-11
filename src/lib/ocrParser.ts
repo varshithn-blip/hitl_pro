@@ -44,17 +44,27 @@ function looksNumeric(s: string): boolean {
  * table-section header (e.g. "Component Name, Amount, Frequency") —
  * distinguished from a table's own data rows by: none of a header row's
  * cells look numeric, whereas a real data row in a repeating table
- * (amounts, counts) almost always has at least one numeric-looking cell. */
+ * (amounts, counts) almost always has at least one numeric-looking cell.
+ *
+ * FOUND IN PRODUCTION: the table-header branch used to trust *any*
+ * non-blank, non-numeric-looking `nextRow` — but an ordinary field/value
+ * row (e.g. "Status of Employment, Present") has exactly that same shape.
+ * That meant a real field whose OCR value came back blank (a 1-cell row —
+ * see the module comment above) sitting right before another plain text
+ * field got misread as a section title, with the plain text field after
+ * it misread as a bogus table header — surfacing as a field silently
+ * vanishing from the form (its label got eaten as a "title") right next
+ * to a garbled "table" with an Add row button and random-looking column
+ * names. Now requires `nextRow` to actually look like a table's first
+ * data row — at least 2 cells AND at least one numeric-looking one — not
+ * just "non-blank", since that's the one thing an ordinary two-field
+ * sequence essentially never has. */
 function looksLikeHeaderRow(row: string[], nextRow: string[] | undefined): boolean {
   if (row.length >= 2 && row[0]?.trim().toLowerCase() === 'fields' && row[1]?.trim().toLowerCase() === 'values') {
     return true
   }
   if (row.length >= 2 && row.every((c) => c && c.trim()) && !row.some(looksNumeric)) {
-    // Only trust this as a table header if the row after it exists and is
-    // plausibly a same-shaped data row (roughly the same column count) —
-    // guards against misreading an ordinary two-column data row (e.g.
-    // "Employee Name, Julian Paolo E. Caraballe") as a header.
-    if (nextRow && nextRow.length >= 1 && !isBlankRow(nextRow)) return true
+    if (nextRow && nextRow.length >= 2 && nextRow.some(looksNumeric)) return true
   }
   return false
 }
