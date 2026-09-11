@@ -56,14 +56,7 @@ export default function App() {
               </div>
             ) : (
               <>
-                <ImageViewer
-                  row={p.selectedRow}
-                  siblingDocs={p.siblingDocs}
-                  onSelectSibling={p.setSelectedRequestId}
-                  imagePreviewUrl={p.imagePreviewUrl}
-                  imagePreviewType={p.imagePreviewType}
-                  imageLoadError={p.imageLoadError}
-                />
+                <ImageViewer row={p.selectedRow} imagePreviewUrl={p.imagePreviewUrl} imagePreviewType={p.imagePreviewType} imageLoadError={p.imageLoadError} />
 
                 <div style={{ width: 452, flexShrink: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-panel)', overflow: 'hidden' }}>
                   <TransactionSummary row={p.selectedRow} />

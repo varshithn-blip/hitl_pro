@@ -71,19 +71,23 @@ real and clickable — only the data source is fake.
   click-drag — anchored under the cursor, full range in every direction);
   PDFs render through the browser's own built-in PDF viewer via an
   iframe, which already has multi-page scrolling, its own zoom, and text
-  search — no bundled PDF library needed. A prev/next switcher appears
-  when a transaction has more than one document (the `loan_0`/`loan_1`
-  case, or two different document types sharing one transaction — a
-  sibling isn't required to share a document type). This switcher moves
-  between siblings independently of the active queue filters: a sibling
-  can easily not match the current Reviewer/Status/Doc type/API called
-  filter (already reviewed, assigned to someone else, a different doc
-  type, ...) and must still be reachable — `usePortal.ts`'s auto-select
-  guard only re-validates the current selection when the *filtered queue
-  itself* changes, not on every selection change, so navigating to a
-  filtered-out sibling doesn't immediately get overridden back to
-  `filteredRows[0]` (a real bug this fixed — the Next/Previous buttons
-  looked like they simply didn't work).
+  search — no bundled PDF library needed.
+
+  **Every row (every Request ID) is its own independent queue card**,
+  opened, decided, and submitted on its own — including when two rows
+  share a Transaction ID (the `loan_0`/`loan_1` case, or two different
+  document types under one transaction). There is deliberately no
+  separate "next document in this transaction" switcher inside the
+  document viewer: an earlier version had one, and it turned out
+  genuinely difficult to get right (a sibling can easily not match the
+  active Reviewer/Status/Doc type/API called filter — already reviewed,
+  assigned to someone else, a different doc type — so it needed a
+  navigation path that bypassed the queue's own filtering without
+  fighting the queue's "auto-select a valid row" logic; simplified away
+  instead of debugged further under time pressure). Two cards sharing a
+  Transaction ID are still visually easy to spot side by side in the
+  queue list — same ID text at the top of each card — a reviewer just
+  clicks between them like any other two rows.
 - **OCR editor** — parsed directly from the transaction's OCR tab, so it
   adapts to whatever fields and sections that document type actually
   has, including a repeating table (Certificate of Employment's "Salary

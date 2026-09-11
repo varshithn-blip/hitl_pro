@@ -182,25 +182,16 @@ export function usePortal() {
   const pendingCount = useMemo(() => masterRows.filter((r) => isPendingStatus(r.status)).length, [masterRows])
 
   // Default selection: first row of the filtered queue, whenever nothing
-  // (or a since-filtered-out row) is selected.
+  // (or a since-filtered-out row) is selected. Every row — every
+  // Request ID, whatever Transaction ID it shares with other rows — is
+  // its own independent queue card, opened and submitted on its own; the
+  // queue list is the only way to move between them.
   //
-  // Deliberately depends on `filteredRows` only, not `selectedRequestId` —
-  // a real bug when it did: the ImageViewer's Next/Previous document
-  // controls (see siblingDocs below) move between documents that share a
-  // Transaction ID, which can easily include a sibling that isn't part of
-  // the *currently filtered* queue (already reviewed by someone else,
-  // assigned to a different reviewer, excluded by the search box, ...).
-  // With `selectedRequestId` as a dependency, clicking Next re-ran this
-  // effect immediately, saw the sibling wasn't in `filteredRows`, and
-  // snapped straight back to `filteredRows[0]` — so the button visibly
-  // did nothing. This should only fire when the *available queue itself*
-  // changes (filters, search, or the loaded rows) and the current
-  // selection no longer belongs to it — never merely because the
-  // selection changed, which covers both sibling navigation and picking
-  // a row directly from the queue list (already guaranteed to be in
-  // filteredRows, so re-validating it is redundant anyway). The
-  // functional setState form reads the true latest selection without
-  // needing it as a dependency.
+  // Deliberately depends on `filteredRows` only, not `selectedRequestId`,
+  // using the functional setState form to read the current selection
+  // without needing it as a dependency — so this only re-validates when
+  // the *available queue itself* changes (filters, search, or the loaded
+  // rows), not merely because the selection changed.
   useEffect(() => {
     setSelectedRequestId((current) => {
       if (current && filteredRows.some((r) => r.requestId === current)) return current
@@ -210,11 +201,6 @@ export function usePortal() {
   }, [filteredRows])
 
   const selectedRow = useMemo(() => masterRows.find((r) => r.requestId === selectedRequestId) ?? null, [masterRows, selectedRequestId])
-
-  const siblingDocs = useMemo(() => {
-    if (!selectedRow) return []
-    return masterRows.filter((r) => r.transactionId === selectedRow.transactionId).sort((a, b) => a.documentType.localeCompare(b.documentType))
-  }, [masterRows, selectedRow])
 
   // --- Load the OCR document for whichever row is selected --------------
   useEffect(() => {
@@ -443,7 +429,6 @@ export function usePortal() {
 
     selectedRow,
     setSelectedRequestId,
-    siblingDocs,
     currentDoc,
     draftSections,
     loadingDoc,

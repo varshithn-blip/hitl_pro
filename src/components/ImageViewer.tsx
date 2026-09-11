@@ -3,12 +3,10 @@ import { DEMO_MODE } from '../lib/config'
 import { isPdfMimeType } from '../lib/driveApi'
 import { docTypeBadge } from '../lib/presentation'
 import type { MasterRow } from '../lib/types'
-import { ChevronLeft, ChevronRight, ExternalLink, Maximize, Rotate, ZoomIn, ZoomOut } from './icons'
+import { ExternalLink, Maximize, Rotate, ZoomIn, ZoomOut } from './icons'
 
 interface Props {
   row: MasterRow
-  siblingDocs: MasterRow[]
-  onSelectSibling: (requestId: string) => void
   /** Object URL for the fetched document bytes (real mode only, resolved
    * from `row.driveLink.href` — see usePortal's image-resolution effect
    * for why this can't just be rendered as an `<img src>` directly). Null
@@ -39,7 +37,7 @@ function clampZoom(z: number) {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
 }
 
-export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl, imagePreviewType, imageLoadError }: Props) {
+export function ImageViewer({ row, imagePreviewUrl, imagePreviewType, imageLoadError }: Props) {
   const [zoom, setZoom] = useState(100)
   const [rotation, setRotation] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
@@ -62,16 +60,6 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
   // none of this component's custom zoom/rotate/pan machinery applies.
   const isPdf = isPdfMimeType(imagePreviewType)
   const isSideways = rotation === 90 || rotation === 270
-
-  const siblingIndex = siblingDocs.findIndex((d) => d.requestId === row.requestId)
-  const hasSiblings = siblingDocs.length > 1
-
-  const goPrev = () => {
-    if (siblingIndex > 0) onSelectSibling(siblingDocs[siblingIndex - 1].requestId)
-  }
-  const goNext = () => {
-    if (siblingIndex < siblingDocs.length - 1) onSelectSibling(siblingDocs[siblingIndex + 1].requestId)
-  }
 
   const badge = docTypeBadge(row.documentType)
 
@@ -187,21 +175,7 @@ export function ImageViewer({ row, siblingDocs, onSelectSibling, imagePreviewUrl
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <IconButton onClick={goPrev} disabled={!hasSiblings || siblingIndex <= 0} title="Previous document in this transaction">
-            <ChevronLeft size={14} />
-          </IconButton>
-          <span style={{ fontSize: 12.5, fontWeight: 500, padding: '0 4px' }}>
-            {badge.label}
-            {hasSiblings && (
-              <>
-                {' '}
-                &nbsp;·&nbsp; Document {siblingIndex + 1} of {siblingDocs.length}
-              </>
-            )}
-          </span>
-          <IconButton onClick={goNext} disabled={!hasSiblings || siblingIndex >= siblingDocs.length - 1} title="Next document in this transaction">
-            <ChevronRight size={14} />
-          </IconButton>
+          <span style={{ fontSize: 12.5, fontWeight: 500, padding: '0 4px' }}>{badge.label}</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
