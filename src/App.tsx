@@ -14,13 +14,17 @@ type RightTab = 'ocr' | 'decision'
 
 export default function App() {
   const p = usePortal()
-  const [rightTab, setRightTab] = useState<RightTab>('ocr')
+  const [rightTab, setRightTab] = useState<RightTab>('decision')
 
-  // Always land on the OCR tab first when opening a different document —
-  // reviewing fields comes before deciding, and it avoids carrying the
-  // previous document's tab choice over by accident.
+  // Always land on the Decision tab first when opening a different
+  // document — most reviews end in a rejection, so the reviewer should
+  // see the rejection reason/fraud flow immediately rather than an extra
+  // click every time; OCR corrections are the exception (needed mainly
+  // on the way to an approval), so that tab is still one click away. This
+  // also avoids carrying the previous document's tab choice over by
+  // accident.
   useEffect(() => {
-    setRightTab('ocr')
+    setRightTab('decision')
   }, [p.selectedRowKey])
 
   const decisionStarted = p.decisionDraft.category !== '' || p.decisionDraft.status !== ''
