@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CONFIG, DEMO_MODE } from '../lib/config'
-import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
+import { extractDriveFileId, fetchDriveFileObjectUrl, isSlowConnection } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
@@ -67,6 +67,14 @@ export function usePortal() {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const [imagePreviewType, setImagePreviewType] = useState<string | null>(null)
   const [imageLoadError, setImageLoadError] = useState<string | null>(null)
+  /** At most one entry: the next queue row's already-downloaded image,
+   * fetched speculatively while the reviewer was still looking at the
+   * current one — see the prefetch effect below. A plain ref, not state:
+   * nothing renders from this directly, it's purely a cache the image-
+   * loading effect checks before deciding whether it needs to fetch at
+   * all. */
+  const prefetchedImageRef = useRef<{ rowKey: string; url: string; mimeType: string } | null>(null)
+  const prefetchingKeyRef = useRef<string | null>(null)
 
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncMessage, setSyncMessage] = useState<string | undefined>()
@@ -270,6 +278,12 @@ export function usePortal() {
 
     if (!user) return
     let cancelled = false
+    // Actually stops the request, not just its effect on state: without
+    // this, switching rows mid-fetch still lets the abandoned request run
+    // to completion in the background (the `cancelled` flag only guards
+    // against acting on its result) — wasted bandwidth on a weak
+    // connection if a reviewer moves through the queue quickly.
+    const controller = new AbortController()
     setLoadingDoc(true)
     ;(async () => {
       try {
@@ -281,15 +295,54 @@ export function usePortal() {
         // suggestions (see attachFieldValidation). OCR tabs are small
         // (a few dozen rows), so this doesn't carry the cost that made
         // the master sheet's row list switch away from it.
-        const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken)
+        const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken, { signal: controller.signal })
         if (cancelled) return
         const rows = grid.map((row) => row.map((cell) => cell?.formattedValue ?? ''))
         const parsedDoc = parseOcrRows(rows)
-        const sections = await attachFieldValidation(parsedDoc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
-        if (cancelled) return
-        const doc: OcrDocument = { rowKey, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
+        const doc: OcrDocument = { rowKey, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc }
+        // Render the fields NOW, without waiting on attachFieldValidation
+        // below — every field already has its real value at this point;
+        // all that's still missing is which ONE of them (Company
+        // Category, in practice) gets live dropdown suggestions. Resolving
+        // that can mean a second network round trip (extractValidationList
+        // follows a ONE_OF_RANGE rule to the range it points at) — on a
+        // slow connection that shouldn't hold up the whole document
+        // appearing on screen for a lookup only one field needs.
         setCurrentDoc(doc)
         setDraftSections(structuredClone(doc.sections))
+        setLoadingDoc(false)
+
+        attachFieldValidation(doc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
+          .then((sections) => {
+            if (cancelled) return
+            // Patch validationOptions into whichever field each came from
+            // (matched by rowIndex, the stable per-field identity used
+            // elsewhere in this file) rather than replacing the sections
+            // wholesale — draftSections may already hold reviewer edits
+            // made in the window while this was still resolving, and
+            // those must survive untouched.
+            const patch = (current: OcrSection[] | null) =>
+              current === null
+                ? current
+                : current.map((section, i) => {
+                    const resolved = sections[i]
+                    if (section.kind !== 'fields' || resolved?.kind !== 'fields') return section
+                    return {
+                      ...section,
+                      fields: section.fields.map((f) => {
+                        const match = resolved.fields.find((rf) => rf.rowIndex === f.rowIndex)
+                        return match ? { ...f, validationOptions: match.validationOptions } : f
+                      }),
+                    }
+                  })
+            setCurrentDoc((prev) => (prev && prev.rowKey === rowKey ? { ...prev, sections: patch(prev.sections) ?? prev.sections } : prev))
+            setDraftSections((prev) => patch(prev))
+          })
+          .catch(() => {
+            // Live suggestions are a nice-to-have, not a requirement —
+            // every field is already a fully working plain-text input
+            // without them. Never surface this as a document-load error.
+          })
       } catch (err) {
         if (!cancelled) {
           setCurrentDoc(null)
@@ -303,6 +356,7 @@ export function usePortal() {
     })()
     return () => {
       cancelled = true
+      controller.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRow && masterRowKey(selectedRow), user])
@@ -335,11 +389,34 @@ export function usePortal() {
       return
     }
 
+    // A prefetch kicked off while the reviewer was still on the PREVIOUS
+    // row may already have this exact row's image sitting in memory (see
+    // the prefetch effect below) — use it directly and skip the network
+    // fetch entirely. Ownership of the blob URL transfers to this
+    // effect's own `objectUrl`/cleanup below, same as a normal fetch, so
+    // it still gets revoked correctly when the reviewer moves on.
+    const rowKey = masterRowKey(selectedRow)
+    const prefetched = prefetchedImageRef.current
+    if (prefetched && prefetched.rowKey === rowKey) {
+      prefetchedImageRef.current = null
+      setImagePreviewUrl(prefetched.url)
+      setImagePreviewType(prefetched.mimeType)
+      return
+    }
+
     let cancelled = false
     let objectUrl: string | null = null
+    // Same reasoning as the OCR-doc effect's controller: without actually
+    // aborting, switching rows mid-download still lets the old row's
+    // (often multi-MB) file finish downloading in the background — the
+    // single most wasteful case of this on a weak connection, since a
+    // reviewer clicking through 3-4 queue cards quickly would otherwise
+    // leave that many image downloads competing for the same limited
+    // bandwidth, none of them shown.
+    const controller = new AbortController()
     ;(async () => {
       try {
-        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken)
+        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken, controller.signal)
         if (cancelled) {
           URL.revokeObjectURL(preview.url)
         } else {
@@ -354,6 +431,7 @@ export function usePortal() {
 
     return () => {
       cancelled = true
+      controller.abort()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
     // masterRowKey, not requestId — two rows can share a Request ID
@@ -362,6 +440,72 @@ export function usePortal() {
     // the first row's image showing under the second row's selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRow && masterRowKey(selectedRow), user])
+
+  // --- Prefetch the NEXT queue row's image ----------------------------
+  // Kicks off once the CURRENT row's own image fetch has settled
+  // (imagePreviewUrl or imageLoadError going non-null) — deliberately
+  // never starts alongside it, so it never competes with what's actually
+  // on screen for a slow connection's limited bandwidth. Bounded to
+  // exactly one row ahead (prefetchedImageRef holds at most one entry,
+  // replacing — and revoking — whatever was there before) and skipped
+  // entirely on a connection that already looks slow or metered (see
+  // isSlowConnection) — prefetching there would just spend bandwidth the
+  // reviewer needs for the document actually in front of them, on a
+  // document they might not even reach next (filters/search can still
+  // change, a queue jump via "Start after row" can happen, ...).
+  useEffect(() => {
+    if (DEMO_MODE || !user || !selectedRowKey) return
+    if (imagePreviewUrl === null && imageLoadError === null) return // current row hasn't settled yet
+    if (isSlowConnection()) return
+
+    const currentIdx = filteredRows.findIndex((r) => masterRowKey(r) === selectedRowKey)
+    const nextRow = currentIdx >= 0 ? filteredRows[currentIdx + 1] : undefined
+    if (!nextRow) return
+    const nextKey = masterRowKey(nextRow)
+    // Already have it, or already fetching it — nothing to do.
+    if (prefetchedImageRef.current?.rowKey === nextKey || prefetchingKeyRef.current === nextKey) return
+
+    const fileId = extractDriveFileId(nextRow.driveLink.href)
+    if (!fileId) return
+
+    let cancelled = false
+    const controller = new AbortController()
+    prefetchingKeyRef.current = nextKey
+    ;(async () => {
+      try {
+        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken, controller.signal)
+        if (cancelled || prefetchingKeyRef.current !== nextKey) {
+          URL.revokeObjectURL(preview.url)
+          return
+        }
+        // Bounded to one entry: drop whatever was cached before (it was
+        // for a row that's no longer "next" — e.g. the reviewer jumped
+        // via a filter change — and was never consumed) rather than
+        // letting it pile up.
+        if (prefetchedImageRef.current) URL.revokeObjectURL(prefetchedImageRef.current.url)
+        prefetchedImageRef.current = { rowKey: nextKey, ...preview }
+      } catch {
+        // A failed prefetch is fine to just drop — the main image effect
+        // above does its own normal fetch, with its own error handling,
+        // once the reviewer actually reaches this row.
+      } finally {
+        if (prefetchingKeyRef.current === nextKey) prefetchingKeyRef.current = null
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [user, selectedRowKey, imagePreviewUrl, imageLoadError, filteredRows])
+
+  // Revoke a still-cached prefetch on unmount — the tab closing/
+  // navigating away is the one case nothing else above already covers.
+  useEffect(() => {
+    return () => {
+      if (prefetchedImageRef.current) URL.revokeObjectURL(prefetchedImageRef.current.url)
+    }
+  }, [])
 
   // --- OCR field/table edit handlers ------------------------------------
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {

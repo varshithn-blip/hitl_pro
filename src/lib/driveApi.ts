@@ -48,10 +48,16 @@ export interface DriveFilePreview {
  * it (plus its content type, for picking how to render it). Caller owns
  * the URL's lifetime — call `URL.revokeObjectURL` on it once it's no
  * longer shown, or the blob stays pinned in memory for the life of the
- * tab. */
-export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string): Promise<DriveFilePreview> {
+ * tab. Pass `signal` (an AbortController's) so switching to a different
+ * row before this resolves actually stops the download — a full-size
+ * scanned document can be several MB, and on a weak connection a
+ * reviewer clicking through the queue quickly can otherwise leave
+ * several of these downloading in the background at once, each one
+ * discarded on arrival. */
+export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string, signal?: AbortSignal): Promise<DriveFilePreview> {
   const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    signal,
   })
   if (!res.ok) {
     const status = res.status
@@ -65,4 +71,19 @@ export async function fetchDriveFileObjectUrl(fileId: string, accessToken: strin
 
 export function isPdfMimeType(mimeType: string | null): boolean {
   return mimeType?.toLowerCase().includes('pdf') ?? false
+}
+
+/** Whether to skip speculative work (currently: prefetching the next
+ * queue item's image) because the connection looks too slow or metered
+ * to spend on something the reviewer might not even reach. Reads the
+ * browser's Network Information API (`navigator.connection`) where
+ * available — Data Saver mode, or an effective type of 2G or slower.
+ * Not every browser exposes this (notably Safari/Firefox as of writing);
+ * `false` (allow prefetching) is the correct default when it's simply
+ * unavailable, not a signal either way about the real connection. */
+export function isSlowConnection(): boolean {
+  const connection = (navigator as any).connection
+  if (!connection) return false
+  if (connection.saveData) return true
+  return connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g'
 }

@@ -272,6 +272,25 @@ implemented per the Sheets API v4 contract but **haven't been exercised
 against the real spreadsheets yet**. Treat live mode as needing a
 verification pass, not as proven:
 
+- **Request cancellation + next-image prefetch** — three related changes
+  to `hooks/usePortal.ts`'s image/OCR-doc effects, all real-mode-only
+  code paths that (like everything else in this section) haven't been
+  exercised against a live Drive/Sheets session: (1) the OCR-doc load no
+  longer waits on `attachFieldValidation`'s validation-option lookup
+  before rendering fields — they appear as soon as parsed, with live
+  suggestions (Company Category) patched in a moment later; (2) the
+  image and OCR-doc fetches now carry a real `AbortController`, so
+  switching rows mid-download actually stops the request instead of just
+  ignoring its result; (3) the next queue row's image is speculatively
+  prefetched once the current one finishes loading, skipped on a
+  connection the Network Information API reports as slow/metered
+  (`driveApi.ts` → `isSlowConnection`), bounded to exactly one row ahead.
+  Demo mode doesn't exercise any of this (it has no real Drive files to
+  fetch), so this was only verified by confirming demo mode itself still
+  works correctly end to end — the actual network behavior (does the
+  abort really cancel the in-flight request, does the prefetched blob
+  get picked up on the next click, does `navigator.connection` behave as
+  expected in a real browser) needs a check against live credentials.
 - **PDF rendering** — the mechanism (fetch bytes via the Drive API,
   detect `application/pdf` from the response's content type, embed the
   resulting blob URL in an `<iframe>`) is confirmed to work as a browser

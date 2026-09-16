@@ -79,7 +79,7 @@ export async function getGridData(
   spreadsheetId: string,
   a1Range: string,
   accessToken: string,
-  options?: { includeValidation?: boolean },
+  options?: { includeValidation?: boolean; signal?: AbortSignal },
 ): Promise<GridCell[][]> {
   const includeValidation = options?.includeValidation ?? true
   const fields = includeValidation
@@ -88,6 +88,7 @@ export async function getGridData(
   const data = await sheetsFetch(
     `/${spreadsheetId}?ranges=${encodeURIComponent(a1Range)}&fields=${encodeURIComponent(fields)}`,
     accessToken,
+    options?.signal ? { signal: options.signal } : undefined,
   )
   const rowData = data.sheets?.[0]?.data?.[0]?.rowData ?? []
   return rowData.map((row: any) => row.values ?? [])
