@@ -89,7 +89,7 @@ export interface MasterRowsLoadProgress {
  * for the whole thing. A production date tab has run into the thousands
  * of rows (~3000 observed) — a single `spreadsheets.get` for all of them
  * (especially with hyperlink metadata on every cell) produces a JSON
- * payload large enough to hang or crash the reviewer's tab. Two fixes
+ * payload large enough to hang or crash the reviewer's tab. Three fixes
  * combined here:
  *
  * 1. Fetch in pages of `ROW_BATCH_SIZE` rows, sequentially, calling
@@ -101,6 +101,11 @@ export interface MasterRowsLoadProgress {
  *    reads `formattedValue`/`hyperlink`, never a validation rule, so
  *    asking for it was pure waste, and a expensive one: Sheets repeats a
  *    rule's full option list on every cell it's attached to.
+ * 3. `startRow` (per the "start reviewing after row N" filter) skips the
+ *    earlier pages entirely rather than just hiding them once loaded —
+ *    rows before it are never requested over the network at all. This is
+ *    a genuine bandwidth saver on a big tab, not only a "resume where I
+ *    left off" convenience.
  *
  * `shouldContinue` is checked before each page so an effect that's since
  * been cancelled (reviewer switched date tabs mid-load) stops making
@@ -111,6 +116,7 @@ export async function fetchMasterRows(
   accessToken: string,
   onBatch: (rows: MasterRow[], progress: MasterRowsLoadProgress) => void,
   shouldContinue: () => boolean = () => true,
+  startRow = 2,
 ): Promise<void> {
   const quotedTab = `'${tabTitle.replace(/'/g, "''")}'`
 
@@ -118,17 +124,26 @@ export async function fetchMasterRows(
   // (no formatting/hyperlink/validation metadata) of App ID, which the
   // sheet's own template populates on every real row. Sheets' values.get
   // trims trailing blank rows, so this array's length is the row count.
+  // Still probes the WHOLE tab (not from startRow) since this is one
+  // lightweight request regardless, and the result also tells us whether
+  // startRow itself is even within range.
   const probeColumn = await getValues(spreadsheetId, `${quotedTab}!A2:A20000`, accessToken)
-  const total = probeColumn.length
+  const lastRow = 1 + probeColumn.length // 1-based last real data row (header is row 1)
+  const effectiveStart = Math.max(2, Math.min(startRow, lastRow + 1))
+  // "total" here means "how many rows this call will actually fetch", not
+  // the tab's grand total — so progress ("840 / 840") reads sensibly when
+  // startRow skips most of the tab, rather than stalling at a fraction of
+  // a total it was never going to reach.
+  const total = Math.max(0, lastRow - effectiveStart + 1)
   if (total === 0) {
     onBatch([], { loaded: 0, total: 0 })
     return
   }
 
   let loaded = 0
-  for (let start = 2; start <= total + 1; start += ROW_BATCH_SIZE) {
+  for (let start = effectiveStart; start <= lastRow; start += ROW_BATCH_SIZE) {
     if (!shouldContinue()) return
-    const end = Math.min(start + ROW_BATCH_SIZE - 1, total + 1)
+    const end = Math.min(start + ROW_BATCH_SIZE - 1, lastRow)
     const grid = await getGridData(spreadsheetId, `${quotedTab}!A${start}:P${end}`, accessToken, { includeValidation: false })
     const rows = grid.map((cells, i) => parseMasterRow(cells, start + i))
     loaded += rows.length

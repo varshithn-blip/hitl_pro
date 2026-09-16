@@ -6,7 +6,7 @@ import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
-import { baseDocType, mergeTaxonomy } from '../lib/taxonomy'
+import { baseDocType, loadCachedTaxonomy, mergeTaxonomy, saveCachedTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, masterRowKey, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
 const EMPTY_DRAFT: DecisionDraft = { category: '', status: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
@@ -50,6 +50,7 @@ export function usePortal() {
     status: 'Pending',
     apiCalled: 'all',
     documentType: 'All',
+    startAfterRow: null,
   })
   const [search, setSearch] = useState('')
 
@@ -104,10 +105,26 @@ export function usePortal() {
           .map((t) => t.title)
         setDateTabs(dateTitles)
         setFilters((f) => ({ ...f, date: f.date || dateTitles[0] || '' }))
-        const sampleTabTitle = dateTitles[0] ?? tabs[0]?.title
-        if (sampleTabTitle) {
-          const live = await readLiveTaxonomy(CONFIG.masterSheetId!, sampleTabTitle, tabs, user.accessToken)
-          if (!cancelled) setTaxonomy(mergeTaxonomy(live))
+
+        // Category / Fraud Reason / Reclassify / Rejection-Reason-by-type
+        // only ever need reading once per browser-tab session — see the
+        // cache's own comment in taxonomy.ts for why sessionStorage is the
+        // right lifetime for this specifically. A cache hit skips the
+        // network read entirely; nothing here touches Company Category,
+        // which stays a live, per-document read regardless (see
+        // usePortal's OCR-load effect / ocrParser.ts attachFieldValidation).
+        const cachedTaxonomy = loadCachedTaxonomy()
+        if (cachedTaxonomy) {
+          setTaxonomy(mergeTaxonomy(cachedTaxonomy))
+        } else {
+          const sampleTabTitle = dateTitles[0] ?? tabs[0]?.title
+          if (sampleTabTitle) {
+            const live = await readLiveTaxonomy(CONFIG.masterSheetId!, sampleTabTitle, tabs, user.accessToken)
+            if (!cancelled) {
+              setTaxonomy(mergeTaxonomy(live))
+              saveCachedTaxonomy(live)
+            }
+          }
         }
       } catch (err) {
         if (!cancelled) setRowsError(err instanceof Error ? err.message : 'Failed to load the master sheet')
@@ -125,6 +142,12 @@ export function usePortal() {
   // that was crashing/hanging the browser. The queue becomes usable after
   // the first batch; loadingRows only covers that initial wait, while
   // rowsLoadProgress tracks the rest streaming in behind it.
+  //
+  // filters.startAfterRow re-triggers this the same as switching dates —
+  // "start after row 500" means the rows before it are never fetched at
+  // all, not merely filtered out of the queue view once loaded, so this
+  // has to restart the fetch from scratch at the new starting point
+  // rather than just re-filtering what's already in masterRows.
   useEffect(() => {
     if (DEMO_MODE || !user || !CONFIG.masterSheetId || !filters.date) return
     let cancelled = false
@@ -132,6 +155,7 @@ export function usePortal() {
     setRowsError(null)
     setRowsLoadProgress(null)
     setMasterRows([])
+    const startRow = filters.startAfterRow != null ? filters.startAfterRow + 1 : 2
     ;(async () => {
       let firstBatch = true
       try {
@@ -149,6 +173,7 @@ export function usePortal() {
             }
           },
           () => !cancelled,
+          startRow,
         )
       } catch (err) {
         if (!cancelled) setRowsError(err instanceof Error ? err.message : 'Failed to load documents for this date')
@@ -162,11 +187,18 @@ export function usePortal() {
     return () => {
       cancelled = true
     }
-  }, [user, filters.date])
+  }, [user, filters.date, filters.startAfterRow])
 
   // --- Derived: filtered queue ------------------------------------------
   const filteredRows = useMemo(() => {
     return masterRows.filter((row) => {
+      // In real mode this is a no-op — fetchMasterRows already skipped
+      // fetching these rows in the first place (see the load effect
+      // above), so masterRows never contains them. Kept here too so demo
+      // mode (which has no fetch to skip, just the static fixture list)
+      // still honors the filter, and as a harmless belt-and-suspenders
+      // check in real mode.
+      if (filters.startAfterRow != null && row.rowIndex <= filters.startAfterRow) return false
       if (filters.reviewer !== 'All' && row.reviewer !== filters.reviewer) return false
       if (filters.status === 'Pending' && !isPendingStatus(row.status)) return false
       if (filters.status !== 'All' && filters.status !== 'Pending' && row.status !== filters.status) return false

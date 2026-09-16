@@ -44,14 +44,23 @@ real and clickable — only the data source is fake.
 ## What it does
 
 - **Filters** — Date (maps to the master sheet's date-named tab),
-  Reviewer, Document Type, Status, and API Called (a 3-state filter: any
+  Reviewer, Document Type, Status, API Called (a 3-state filter: any
   / done only / not done — not a plain distinct-values dropdown, per the
-  confirmed spec). Document Type filters by *base* type
+  confirmed spec), and **Start after row** (skip straight to a given
+  sheet row instead of reviewing from the top of the date tab — e.g. "500"
+  to pick up at row 501). Document Type filters by *base* type
   (payslip/credit/loan/coe — see `taxonomy.ts` `baseDocType`), not the
   exact `loan_0`/`loan_1` tab name — "show me payslips", not "show me
   specifically the 2nd loan doc of a transaction" — and, like the
   Reviewer filter, only lists types actually present in the loaded date
-  tab rather than a fixed list.
+  tab rather than a fixed list. Start-after-row is more than a view
+  filter: it changes where `fetchMasterRows` *starts fetching* (see
+  below) — rows before it are never requested over the network at all,
+  not just hidden once loaded, so setting it also means less data pulled
+  on a slow connection when a reviewer only cares about the tail of a big
+  tab. Applies on blur/Enter, not on every keystroke, since (unlike the
+  other filters, which just re-filter rows already in memory) changing it
+  triggers a real re-fetch.
 - **Batched row loading** — a production date tab can run into the
   thousands of rows (~3000 observed). Fetching that in one
   `spreadsheets.get` — especially with hyperlink/validation metadata on
@@ -218,6 +227,20 @@ real and clickable — only the data source is fake.
   a fallback for when a rule — or the Ref tab, or one of its columns —
   can't be read, tracked **per document type independently** (see
   `Taxonomy.source.rejectionReasonByDocType`), not as one blended flag.
+  All of the above (Category, Fraud Reason, Reclassify, Rejection Reason
+  by doc type) is read only **once per sign-in**, not per document or per
+  date-tab switch — the effect that calls `readLiveTaxonomy` depends only
+  on `user`. It's also cached to `sessionStorage` (`lib/taxonomy.ts` →
+  `loadCachedTaxonomy`/`saveCachedTaxonomy`) so a page refresh mid-shift
+  (a real scenario on a flaky connection) reuses it instantly instead of
+  re-reading the sheet — `sessionStorage` clears itself when the tab
+  closes, which is deliberately exactly "per session" and nothing longer,
+  so nobody's working off yesterday's rejection-reason list tomorrow.
+  **Company Category is the one exception** — it's read live, per
+  document, straight off that specific OCR tab's own cell
+  (`ocrParser.ts` → `attachFieldValidation`), a completely separate code
+  path that this cache never touches, since it's application-specific
+  rather than shared taxonomy.
 - **Date filter tabs** — only tabs named like `dd-mm-yyyy` (e.g.
   `03-09-2026`) are treated as a day's queue (`lib/masterSheet.ts` →
   `isDateTabTitle`). Other tabs living in the same spreadsheet for other
