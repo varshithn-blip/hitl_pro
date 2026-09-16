@@ -182,11 +182,21 @@ real and clickable — only the data source is fake.
   full on every submit already. A genuinely untouched plain-text field
   is left alone, so this doesn't turn every submit into a full-document
   rewrite.
-- **Decision panel** — Category (Valid / Invalid / Incomplete), Rejection
-  Reason (a flat list per document type — payslip/credit/loan/coe each
-  have their own), Fraud Reason (multi-select, independent of Category —
-  confirmed it can apply regardless of Valid/Invalid/Incomplete),
-  Reclassify document type, and free-text notes. Submit writes the OCR
+- **Decision panel** — opens by default when a document is selected (not
+  OCR details), and Rejection Reason is the first field in it, always
+  visible rather than only appearing after clicking Reject: most reviews
+  end in a rejection, so the reviewer should be able to pick the reason
+  immediately without extra clicks. Picking a reason there sets
+  Category=Invalid and Decision=Manually Rejected automatically — the
+  common "reject with a reason" case is one click instead of three.
+  Approving is still a deliberate separate action (click Approve, pick
+  Valid), and switching to Approve after picking a reason clears it, same
+  as before. Below the reason: Category (Valid / Invalid / Incomplete),
+  Decision (Approve / Reject), Fraud Reason (multi-select, independent of
+  Category — confirmed it can apply regardless of
+  Valid/Invalid/Incomplete), Reclassify document type, and free-text
+  notes. Rejection Reason itself is a flat list per document type —
+  payslip/credit/loan/coe each have their own. Submit writes the OCR
   corrections and the decision back — in demo mode to local state, in
   live mode as two Sheets API batch writes (OCR tab, then the master
   row) — then advances to the next queued document.
@@ -346,8 +356,10 @@ verification pass, not as proven:
   independent fields, each set directly by the reviewer (a "Document
   category" control for Valid/Invalid/Incomplete, a separate "Decision"
   control for Approve/Reject) — not one derived from the other. A Valid
-  document can still be Rejected. Rejection Reason is gated on
-  Decision=Reject, not on Category.
+  document can still be Rejected. Rejection Reason's *requirement* for
+  Submit is still gated on Decision=Reject, not on Category — but per
+  later direction the field itself is always visible (see the Decision
+  panel bullet above), not only shown once Reject is picked.
 - ~~"Pending" means a blank Status cell~~ — **wrong, found via the "Pending
   review" filter matching nothing against the real prod sheet.** The
   assumption (from the original discovery pass, before there was a live

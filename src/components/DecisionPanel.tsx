@@ -99,6 +99,42 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
         gap: 16,
       }}
     >
+      {/* Always visible, and first in the panel — rejection is the
+          majority action reviewers take, so the reason dropdown is the
+          very first thing they see rather than something that only
+          appears after clicking Reject. Picking a reason here marks
+          Category=Invalid and Decision=Reject automatically (see its
+          onChange below), so the common "reject with a reason" case is
+          one click instead of three; a reviewer accepting instead just
+          leaves this alone and clicks Approve below as before. */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={fieldLabelStyle}>Rejection reason</span>
+          <SourceBadge source={taxonomy.source.rejectionReasonByDocType[docType] ?? 'fallback'} count={reasons.length} />
+        </div>
+        <select
+          value={draft.rejectionReason}
+          onChange={(e) => {
+            const rejectionReason = e.target.value
+            const next: DecisionDraft = { ...draft, rejectionReason }
+            if (rejectionReason !== '') {
+              next.category = 'Invalid'
+              next.status = 'Manually Rejected'
+            }
+            onChange(next)
+          }}
+          style={selectBoxStyle}
+        >
+          <option value="">Select a reason…</option>
+          {reasons.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Selecting a reason marks this document Invalid &amp; Rejected below automatically.</span>
+      </div>
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <span style={fieldLabelStyle}>Document category</span>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -173,23 +209,6 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
           {isIncomplete ? "An Incomplete document can't be approved." : 'Independent of category above — a Valid document can still be rejected for other reasons.'}
         </span>
       </div>
-
-      {needsReason && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={fieldLabelStyle}>Rejection reason</span>
-            <SourceBadge source={taxonomy.source.rejectionReasonByDocType[docType] ?? 'fallback'} count={reasons.length} />
-          </div>
-          <select value={draft.rejectionReason} onChange={(e) => onChange({ ...draft, rejectionReason: e.target.value })} style={selectBoxStyle}>
-            <option value="">Select a reason…</option>
-            {reasons.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
 
       <FraudReasonPicker
         options={taxonomy.fraudReasons}
