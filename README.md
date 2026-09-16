@@ -248,6 +248,33 @@ real and clickable — only the data source is fake.
   filtered out of the Date dropdown and can't accidentally become the
   "most recent tab" the app defaults to or samples Category/Fraud
   Reason/Reclassify's data-validation from.
+- **Retry with backoff** — every Sheets/Drive request (reads and writes
+  alike) automatically retries a couple of times with exponential backoff
+  on a transient failure (`lib/retry.ts` → `withRetry`, used by
+  `sheetsApi.ts` and `driveApi.ts`) — a dropped packet on a weak
+  connection shouldn't force a reviewer to manually retry by hand. Never
+  retries a deliberate cancellation (an aborted request — see the
+  AbortController wiring above) or an auth/permission error (401/403/
+  404), since a retry can't fix either of those.
+- **Self-hosted fonts, deferred sign-in script** — IBM Plex Sans/Mono are
+  bundled via `@fontsource` (imported in `main.tsx`) instead of pulled
+  from an external fonts.googleapis.com stylesheet, removing a render-
+  blocking round trip on every fresh load. Google Identity Services'
+  script is no longer loaded unconditionally in `index.html` either —
+  `lib/googleAuth.ts` → `loadGsiScript` injects it lazily on the first
+  actual `signIn()` call, so a returning reviewer with a still-valid
+  stored token (the common case) never fetches it at all. `index.html`
+  also preconnects to `sheets.googleapis.com`/`www.googleapis.com` now,
+  the two domains that matter most for this app's own data, not just the
+  font host.
+- **Queue list rendering** — each row is a memoized component
+  (`QueueRow` in `components/QueueList.tsx`) so an unrelated re-render
+  (search input, sync-status ticking, a filter change) doesn't re-render
+  every row in the queue, only the ones whose own data actually changed.
+  Each row also sets `content-visibility: auto`, a cheap browser-native
+  way to skip layout/paint work for rows currently scrolled out of view —
+  matters more as a lightly-filtered queue on a big date tab grows into
+  hundreds of live rows.
 
 ## What "protected" means here — and what's still just a display problem in Sheets
 

@@ -14,6 +14,8 @@
 // works as long as the signed-in reviewer's account can see the file,
 // same as everything else in this app.
 
+import { withRetry } from './retry'
+
 const DRIVE_FILE_ID_PATTERNS = [/\/file\/d\/([a-zA-Z0-9_-]+)/, /\/d\/([a-zA-Z0-9_-]+)/, /[?&]id=([a-zA-Z0-9_-]+)/]
 
 export function extractDriveFileId(url: string | null): string | null {
@@ -53,20 +55,26 @@ export interface DriveFilePreview {
  * scanned document can be several MB, and on a weak connection a
  * reviewer clicking through the queue quickly can otherwise leave
  * several of these downloading in the background at once, each one
- * discarded on arrival. */
+ * discarded on arrival. Retried (see lib/retry.ts) on a transient
+ * failure — a full re-download from scratch on retry (`fetch` can't
+ * resume a partial one), but still better than surfacing a hard error
+ * for one dropped packet on a flaky connection and making the reviewer
+ * retry by hand. */
 export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string, signal?: AbortSignal): Promise<DriveFilePreview> {
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal,
+  return withRetry(async () => {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    })
+    if (!res.ok) {
+      const status = res.status
+      const hint = status === 403 || status === 404 ? ' — the signed-in account may not have access to this file.' : ''
+      throw new DriveApiError(`Failed to load the document from Drive (${status})${hint}`, status)
+    }
+    const blob = await res.blob()
+    const mimeType = blob.type || res.headers.get('content-type') || 'application/octet-stream'
+    return { url: URL.createObjectURL(blob), mimeType }
   })
-  if (!res.ok) {
-    const status = res.status
-    const hint = status === 403 || status === 404 ? ' — the signed-in account may not have access to this file.' : ''
-    throw new DriveApiError(`Failed to load the document from Drive (${status})${hint}`, status)
-  }
-  const blob = await res.blob()
-  const mimeType = blob.type || res.headers.get('content-type') || 'application/octet-stream'
-  return { url: URL.createObjectURL(blob), mimeType }
 }
 
 export function isPdfMimeType(mimeType: string | null): boolean {

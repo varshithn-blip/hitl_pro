@@ -5,6 +5,8 @@
 // (no live Google Cloud OAuth client was available while building this) —
 // see README "Known gaps" before relying on it in production.
 
+import { withRetry } from './retry'
+
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets'
 
 export class SheetsApiError extends Error {
@@ -13,20 +15,29 @@ export class SheetsApiError extends Error {
   }
 }
 
+// Retried (see lib/retry.ts) — a dropped packet or brief disconnect on a
+// weak connection shouldn't surface as a hard error and make a reviewer
+// manually retry every hiccup by hand. Safe to retry writes too: a
+// Sheets values write is idempotent (re-sending the same decision/OCR
+// values a second time changes nothing), so there's no risk of a
+// double-write from retrying one that actually succeeded but whose
+// response was slow/lost.
 async function sheetsFetch(path: string, accessToken: string, init?: RequestInit) {
-  const res = await fetch(`${SHEETS_BASE}${path}`, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
+  return withRetry(async () => {
+    const res = await fetch(`${SHEETS_BASE}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      throw new SheetsApiError(body?.error?.message ?? `Sheets API request failed (${res.status})`, res.status)
+    }
+    return res.json()
   })
-  if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    throw new SheetsApiError(body?.error?.message ?? `Sheets API request failed (${res.status})`, res.status)
-  }
-  return res.json()
 }
 
 /** 0-based column index -> A1 column letters (0 -> "A", 26 -> "AA"). */
