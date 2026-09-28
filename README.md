@@ -327,21 +327,41 @@ verification pass, not as proven:
   *real* PDF coming out of the actual master sheet's Drive Link column,
   so still worth a real check.
 - ~~Resolving `Image URL` / `Drive Link` / `Sheet URL`~~ — **confirmed
-  working** against the live sheet: `sheetsApi.getGridData`'s `hyperlink`
-  field read does resolve these link chips correctly.
-  One correction and one follow-on issue found: the document image is
-  resolved from **`Drive Link`, not `Image URL`** — the two columns aren't
-  interchangeable (per the user; what `Image URL` is actually for is still
-  an open question). And the resolved Drive Link is a Drive *view* link
-  (an HTML viewer page — fine for the "Open in Drive" navigation, which is
-  a plain `<a href>`), not a raw-image URL, so it can't be dropped
-  directly into an `<img src>`. `lib/driveApi.ts` now
-  fetches the file's actual bytes through the Drive API (with the
-  reviewer's own token) and hands the browser a `blob:` URL instead — see
-  its comments for the full reasoning. Still worth watching for: this
-  will surface a 403 if a reviewer's account can see the *sheet* but not
-  the underlying *image file* in Drive (they're separate permissions) —
-  `imageLoadError` in the UI will say so explicitly if that happens.
+  working** against the live sheet, with one real bug found and fixed
+  along the way. `sheetsApi.getGridData`'s `hyperlink` field read
+  resolves a classic blue-underlined link or `HYPERLINK()` formula
+  correctly (confirmed for `Sheet URL`, whose visible cell text is the
+  full URL itself) — but `Image URL` and `Drive Link` turned out to be
+  rendered as Sheets **Smart Chips** instead (the pill-with-icon link
+  style; the cell's visible text is just a short label like "File
+  Link"/"Drive Link", never the URL). A smart chip's target URL lives in
+  a completely different API field, `chipRuns`, which `hyperlink` never
+  covers — so those two columns were silently resolving to a `null`
+  href on every row: an unclickable "Open in Drive" button, and no
+  document image ever loading, despite the chip clearly working when
+  clicked directly in Sheets. Found by pulling the real sheet's raw
+  content directly and noticing `Image URL`/`Drive Link` never showed an
+  actual URL anywhere, unlike `Sheet URL`. `sheetsApi.ts`'s `GridCell`
+  now also requests/exposes `chipRuns`, and `masterSheet.ts`'s `link()`
+  helper falls back to the first chip run's URI when `hyperlink` is
+  absent — `hyperlink` still wins when a cell genuinely has both.
+  Covered by a regression case in `verify:parser` reproducing this exact
+  cell shape (a chip-only Image URL/Drive Link alongside a
+  hyperlink-only Sheet URL, so the fallback is confirmed to fire only
+  where it should).
+  One correction and one follow-on issue found earlier, still true: the
+  document image is resolved from **`Drive Link`, not `Image URL`** — the
+  two columns aren't interchangeable (per the user; what `Image URL` is
+  actually for is still an open question). And the resolved Drive Link is
+  a Drive *view* link (an HTML viewer page — fine for the "Open in Drive"
+  navigation, which is a plain `<a href>`), not a raw-image URL, so it
+  can't be dropped directly into an `<img src>`. `lib/driveApi.ts` fetches
+  the file's actual bytes through the Drive API (with the reviewer's own
+  token) and hands the browser a `blob:` URL instead — see its comments
+  for the full reasoning. Still worth watching for: this will surface a
+  403 if a reviewer's account can see the *sheet* but not the underlying
+  *image file* in Drive (they're separate permissions) — `imageLoadError`
+  in the UI will say so explicitly if that happens.
 - **Data-validation reads** (`readLiveTaxonomy`) — the rejection-reason
   dropdown still looked incomplete after adding `ONE_OF_RANGE` support
   (previous entry below). First found and fixed one real cause:

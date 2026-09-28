@@ -64,16 +64,29 @@ export async function listTabs(spreadsheetId: string, accessToken: string): Prom
 }
 
 /** Raw grid-data cell shape we care about — formatted display text, the
- * resolved hyperlink (if any), and any data-validation rule attached. */
+ * resolved hyperlink (if any), any data-validation rule attached, and any
+ * "smart chip" runs (see chipRuns below). */
 export interface GridCell {
   formattedValue?: string
   hyperlink?: string
   dataValidation?: {
     condition?: { type: string; values?: { userEnteredValue?: string }[] }
   }
+  /** A cell rendered as a "Smart Chip" — the pill-with-icon link style
+   * Sheets offers for a Drive file/Calendar event/etc, as opposed to a
+   * classic blue-underlined hyperlink or a HYPERLINK() formula. Found
+   * live: the master sheet's Image URL and Drive Link columns render
+   * this way (the cell's visible text is just a short label like "File
+   * Link"/"Drive Link", never the URL — confirmed by pulling the raw
+   * sheet content directly), and a smart chip's target URL is carried
+   * here, NOT in the `hyperlink` field above, which comes back empty for
+   * these cells despite the chip clearly working when clicked in
+   * Sheets' own UI. See masterSheet.ts's `link()` helper, which checks
+   * this as a fallback. */
+  chipRuns?: { chip?: { richLinkProperties?: { uri?: string } } }[]
 }
 
-/** Fetch a sheet range with hyperlink (+ by default, data-validation)
+/** Fetch a sheet range with hyperlink/chip (+ by default, data-validation)
  * metadata, not just plain values — needed to resolve the Image URL/Drive
  * Link/Sheet URL link chips, and to read dropdown option lists straight
  * from the sheet. Plain value reads (no metadata needed) should use
@@ -85,7 +98,10 @@ export interface GridCell {
  * attached to, not once per column, so requesting it over a rule that
  * spans thousands of rows (e.g. the master sheet's Category/Rejection
  * Reason columns) makes the response balloon well past what the plain
- * values would cost on their own. */
+ * values would cost on their own. `chipRuns` is always requested
+ * regardless of that flag — it's cheap (nothing like dataValidation's
+ * per-cell option-list repetition) and link resolution needs it on
+ * every row-loading pass, not just the lighter validation-aware reads. */
 export async function getGridData(
   spreadsheetId: string,
   a1Range: string,
@@ -94,8 +110,8 @@ export async function getGridData(
 ): Promise<GridCell[][]> {
   const includeValidation = options?.includeValidation ?? true
   const fields = includeValidation
-    ? 'sheets(data(rowData(values(formattedValue,hyperlink,dataValidation))))'
-    : 'sheets(data(rowData(values(formattedValue,hyperlink))))'
+    ? 'sheets(data(rowData(values(formattedValue,hyperlink,dataValidation,chipRuns))))'
+    : 'sheets(data(rowData(values(formattedValue,hyperlink,chipRuns))))'
   const data = await sheetsFetch(
     `/${spreadsheetId}?ranges=${encodeURIComponent(a1Range)}&fields=${encodeURIComponent(fields)}`,
     accessToken,

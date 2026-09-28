@@ -51,7 +51,18 @@ export function parseSheetUrlHref(href: string | null): { spreadsheetId: string;
 export function parseMasterRow(cells: GridCell[], sheetRowNumber: number): MasterRow {
   const cell = (col: MasterColumn) => cells[COLUMN_INDEX[col]]
   const text = (col: MasterColumn) => cell(col)?.formattedValue ?? ''
-  const link = (col: MasterColumn) => ({ label: text(col), href: cell(col)?.hyperlink ?? null })
+  // `hyperlink` covers a classic blue-underlined link or a HYPERLINK()
+  // formula (confirmed working — e.g. Sheet URL). Image URL and Drive
+  // Link found live to be rendered as Sheets "Smart Chips" instead (a
+  // pill with an icon, cell text just a short label like "File Link" —
+  // never the URL itself) — a smart chip's target lives in `chipRuns`,
+  // a completely different API field `hyperlink` never covers. Try
+  // `hyperlink` first since it's the cheaper/more common case, fall back
+  // to the first chip run's URI so a chip-style cell still resolves.
+  const link = (col: MasterColumn) => {
+    const c = cell(col)
+    return { label: text(col), href: c?.hyperlink ?? c?.chipRuns?.[0]?.chip?.richLinkProperties?.uri ?? null }
+  }
 
   return {
     rowIndex: sheetRowNumber,

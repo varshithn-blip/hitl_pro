@@ -6,9 +6,11 @@
 // blank-valued field both come back as one-cell rows) is exactly the kind
 // of thing worth re-checking by hand against real sheet data once it's
 // available. Run with `npm run verify:parser`.
+import { extractDriveFileId } from '../src/lib/driveApi'
 import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
-import { parseRejectionReasonRefRows } from '../src/lib/masterSheet'
+import { parseMasterRow, parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
+import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
 
 // Sanity check for forceTextIfDateOrNumeric against real values pulled
@@ -210,6 +212,66 @@ console.log('\n=== parseRejectionReasonRefRows (real "Ref" tab content) ===')
 
   if (fail > 0) {
     console.log(`\n${fail} parseRejectionReasonRefRows case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// Regression test for a real production bug: Image URL and Drive Link
+// cells resolved to a null href (and so an unclickable "Open in Drive"
+// button, and no document image ever loading) despite the cell clearly
+// having a working link in Sheets' own UI. Root cause, found by pulling
+// the real sheet's raw content directly: those two columns render as
+// Sheets "Smart Chips" (a pill with an icon; the cell's visible text is
+// just a short label like "File Link"/"Drive Link", never the URL) —
+// and a smart chip's target lives in the API's `chipRuns` field, which
+// `parseMasterRow`'s `link()` helper never read before. Sheet URL uses a
+// classic hyperlink instead (its visible text IS the full URL, confirmed
+// against the real sheet) — reproduced here too, to confirm the
+// `hyperlink` path still wins over `chipRuns` when a cell has both.
+console.log('\n=== parseMasterRow (smart-chip Image URL/Drive Link resolution) ===')
+{
+  const cells: GridCell[] = new Array(16).fill(null).map(() => ({}))
+  // Image URL (index 3): smart chip, no `hyperlink` — exactly the shape
+  // pulled from the real master sheet.
+  cells[3] = { formattedValue: 'File Link', chipRuns: [{ chip: { richLinkProperties: { uri: 'https://drive.google.com/file/d/1AbCImageFileId/view?usp=drive_link' } } }] }
+  // Sheet URL (index 5): classic hyperlink, visible text IS the URL, no chipRuns.
+  cells[5] = {
+    formattedValue: 'https://docs.google.com/spreadsheets/d/1JmQaoD3c_IkWG5YHlARvNsOUKpS1eUSHa7gu6Wa0fO8#gid=1618544619',
+    hyperlink: 'https://docs.google.com/spreadsheets/d/1JmQaoD3c_IkWG5YHlARvNsOUKpS1eUSHa7gu6Wa0fO8#gid=1618544619',
+  }
+  // Drive Link (index 12): smart chip again, using the other common Drive URL shape (open?id=...).
+  cells[12] = { formattedValue: 'Drive Link', chipRuns: [{ chip: { richLinkProperties: { uri: 'https://drive.google.com/open?id=1XyZDriveFileId' } } }] }
+
+  const row = parseMasterRow(cells, 2)
+  let fail = 0
+
+  const ok1 = row.imageUrl.href === 'https://drive.google.com/file/d/1AbCImageFileId/view?usp=drive_link'
+  if (!ok1) fail++
+  console.log(`  ${ok1 ? 'ok  ' : 'FAIL'} Image URL (smart chip, no hyperlink) resolves via chipRuns - got ${JSON.stringify(row.imageUrl)}`)
+
+  const ok2 = row.sheetUrl.href?.startsWith('https://docs.google.com/spreadsheets/') ?? false
+  if (!ok2) fail++
+  console.log(`  ${ok2 ? 'ok  ' : 'FAIL'} Sheet URL (classic hyperlink) still resolves via hyperlink, unaffected by the chip fallback - got ${JSON.stringify(row.sheetUrl)}`)
+
+  const ok3 = row.driveLink.href === 'https://drive.google.com/open?id=1XyZDriveFileId'
+  if (!ok3) fail++
+  console.log(`  ${ok3 ? 'ok  ' : 'FAIL'} Drive Link (smart chip, no hyperlink) resolves via chipRuns - got ${JSON.stringify(row.driveLink)}`)
+
+  // End-to-end: the resolved chip URL must also be a shape
+  // extractDriveFileId (driveApi.ts) can actually pull a file id out of —
+  // resolving the link is useless for the image preview otherwise.
+  const imageFileId = extractDriveFileId(row.imageUrl.href)
+  const ok4 = imageFileId === '1AbCImageFileId'
+  if (!ok4) fail++
+  console.log(`  ${ok4 ? 'ok  ' : 'FAIL'} extractDriveFileId reads the resolved Image URL chip link - got ${JSON.stringify(imageFileId)}`)
+
+  const driveFileId = extractDriveFileId(row.driveLink.href)
+  const ok5 = driveFileId === '1XyZDriveFileId'
+  if (!ok5) fail++
+  console.log(`  ${ok5 ? 'ok  ' : 'FAIL'} extractDriveFileId reads the resolved Drive Link chip link (open?id= shape) - got ${JSON.stringify(driveFileId)}`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} parseMasterRow smart-chip case(s) failed.`)
     process.exitCode = 1
   }
 }
