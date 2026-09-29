@@ -191,11 +191,16 @@ real and clickable — only the data source is fake.
   full on every submit already. A genuinely untouched plain-text field
   is left alone, so this doesn't turn every submit into a full-document
   rewrite.
-- **Decision panel** — opens by default when a document is selected (not
-  OCR details), and Rejection Reason is the first field in it, always
-  visible rather than only appearing after clicking Reject: most reviews
-  end in a rejection, so the reviewer should be able to pick the reason
-  immediately without extra clicks. Picking a reason there sets
+- **Decision panel** — OCR details is still the tab that opens by
+  default when a document is selected (correcting fields comes before
+  deciding); a brief change to default to Decision instead — reasoning
+  that most reviews end in a rejection — was reverted per explicit
+  direction, that didn't make sense as the starting point. Within the
+  Decision panel itself, Rejection Reason is the first field in it,
+  always visible rather than only appearing after clicking Reject: most
+  reviews end in a rejection, so the reviewer should be able to pick the
+  reason immediately without extra clicks once they get to that tab.
+  Picking a reason there sets
   Category=Invalid and Decision=Manually Rejected automatically — the
   common "reject with a reason" case is one click instead of three.
   Approving is still a deliberate separate action (click Approve, pick

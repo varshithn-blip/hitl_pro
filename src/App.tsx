@@ -14,17 +14,19 @@ type RightTab = 'ocr' | 'decision'
 
 export default function App() {
   const p = usePortal()
-  const [rightTab, setRightTab] = useState<RightTab>('decision')
+  const [rightTab, setRightTab] = useState<RightTab>('ocr')
 
-  // Always land on the Decision tab first when opening a different
-  // document — most reviews end in a rejection, so the reviewer should
-  // see the rejection reason/fraud flow immediately rather than an extra
-  // click every time; OCR corrections are the exception (needed mainly
-  // on the way to an approval), so that tab is still one click away. This
-  // also avoids carrying the previous document's tab choice over by
-  // accident.
+  // Always land on the OCR tab first when opening a different document —
+  // reviewing/correcting fields comes before deciding, and it avoids
+  // carrying the previous document's tab choice over by accident. (Was
+  // briefly changed to default to Decision instead, on the reasoning that
+  // most reviews end in a rejection — reverted per explicit direction:
+  // that didn't make sense as the starting point after all. Rejection
+  // Reason being moved to the top of the Decision panel, and
+  // auto-marking Invalid+Rejected when a reason is picked, are unrelated
+  // changes and stay as they are.)
   useEffect(() => {
-    setRightTab('decision')
+    setRightTab('ocr')
   }, [p.selectedRowKey])
 
   const decisionStarted = p.decisionDraft.category !== '' || p.decisionDraft.status !== ''
