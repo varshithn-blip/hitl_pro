@@ -225,6 +225,26 @@ real and clickable — only the data source is fake.
   happened to be genuinely more than 60 days old as of this build, so
   the "outdated" path was exercised against a real date comparison, not
   only a synthetic one.
+  - **What happens right after the click** (per explicit direction — the
+    button's effect wasn't obvious enough before this): if the field a
+    check actually looked at needs the reviewer's attention — flagged as
+    outdated, or a date this couldn't even parse — the OCR panel
+    smooth-scrolls straight to that field's warning so it's on screen
+    without the reviewer having to go looking for it, and stays on the
+    OCR tab so they can either fix it and re-submit or leave the flag as
+    correct and move on themselves. Anything else — a clean check, or a
+    document type this rule doesn't apply to — has nothing left to look
+    at here, so it switches the panel to the Decision tab automatically.
+    `confirmOcrFields` (`usePortal.ts`) returns the check result it just
+    computed so `OcrEditor`'s click handler can act on it in the same
+    click, rather than a separate effect watching for the result to
+    change — an effect keyed off the result would re-fire every time the
+    OCR tab remounts (e.g. the reviewer switching back to it after being
+    moved to Decision), which would bounce them straight back. Verified
+    via Playwright: the outdated-coe case scrolls the flagged field into
+    the actual viewport (not just present somewhere off-screen) and
+    stays on OCR, a clean payslip case switches straight to Decision, and
+    fixing the flagged date and re-submitting also switches to Decision.
 - **Payslip auto-calculated fields** (`lib/payslipCalc.ts`,
   `lib/calculator.ts`) — Payslip-only, per explicit direction:
   - **Duration** recomputes automatically from Salary Period Start/End

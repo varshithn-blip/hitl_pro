@@ -595,8 +595,17 @@ export function usePortal() {
   // "flag as outdated" never fires against a raw, possibly-misread OCR
   // date — only once the reviewer has confirmed (by clicking this) that
   // the fields are actually correct.
-  const confirmOcrFields = useCallback(() => {
-    if (!selectedRow || !draftSections) return
+  //
+  // Returns the freshly computed result (in addition to storing it in
+  // state) so the caller — OcrEditor's click handler — can react to it
+  // immediately: scroll to the flagged field, or move on to the Decision
+  // tab, in the very same click rather than via a separate effect. An
+  // effect watching `ocrCheckResult` would re-fire every time OcrEditor
+  // remounts (e.g. the reviewer switches back to the OCR tab after this
+  // already navigated them to Decision), which would bounce them right
+  // back — a one-shot return value avoids that entirely.
+  const confirmOcrFields = useCallback((): OutdatedCheckResult | null => {
+    if (!selectedRow || !draftSections) return null
     const docType = baseDocType(selectedRow.documentType)
     const result = checkOutdatedDocument(docType, draftSections)
     setOcrCheckResult(result)
@@ -616,6 +625,7 @@ export function usePortal() {
           : prev,
       )
     }
+    return result
   }, [selectedRow, draftSections])
 
   const setPayslipCalculatorExpr = useCallback((field: keyof PayslipCalculatorInputs, value: string) => {

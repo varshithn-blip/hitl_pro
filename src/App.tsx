@@ -86,6 +86,7 @@ export default function App() {
                         onRemoveTableRow={p.removeTableRow}
                         checkResult={p.ocrCheckResult}
                         onConfirmOcr={p.confirmOcrFields}
+                        onNavigateToDecision={() => setRightTab('decision')}
                         documentType={p.selectedRow.documentType}
                         payslipCalculator={p.payslipCalculator}
                         onPayslipCalculatorChange={p.setPayslipCalculatorExpr}
