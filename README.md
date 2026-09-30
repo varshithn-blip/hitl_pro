@@ -44,14 +44,23 @@ real and clickable — only the data source is fake.
 ## What it does
 
 - **Filters** — Date (maps to the master sheet's date-named tab),
-  Reviewer, Document Type, Status, and API Called (a 3-state filter: any
+  Reviewer, Document Type, Status, API Called (a 3-state filter: any
   / done only / not done — not a plain distinct-values dropdown, per the
-  confirmed spec). Document Type filters by *base* type
+  confirmed spec), and **Start after row** (skip straight to a given
+  sheet row instead of reviewing from the top of the date tab — e.g. "500"
+  to pick up at row 501). Document Type filters by *base* type
   (payslip/credit/loan/coe — see `taxonomy.ts` `baseDocType`), not the
   exact `loan_0`/`loan_1` tab name — "show me payslips", not "show me
   specifically the 2nd loan doc of a transaction" — and, like the
   Reviewer filter, only lists types actually present in the loaded date
-  tab rather than a fixed list.
+  tab rather than a fixed list. Start-after-row is more than a view
+  filter: it changes where `fetchMasterRows` *starts fetching* (see
+  below) — rows before it are never requested over the network at all,
+  not just hidden once loaded, so setting it also means less data pulled
+  on a slow connection when a reviewer only cares about the tail of a big
+  tab. Applies on blur/Enter, not on every keystroke, since (unlike the
+  other filters, which just re-filter rows already in memory) changing it
+  triggers a real re-fetch.
 - **Batched row loading** — a production date tab can run into the
   thousands of rows (~3000 observed). Fetching that in one
   `spreadsheets.get` — especially with hyperlink/validation metadata on
@@ -182,11 +191,126 @@ real and clickable — only the data source is fake.
   full on every submit already. A genuinely untouched plain-text field
   is left alone, so this doesn't turn every submit into a full-document
   rewrite.
-- **Decision panel** — Category (Valid / Invalid / Incomplete), Rejection
-  Reason (a flat list per document type — payslip/credit/loan/coe each
-  have their own), Fraud Reason (multi-select, independent of Category —
-  confirmed it can apply regardless of Valid/Invalid/Incomplete),
-  Reclassify document type, and free-text notes. Submit writes the OCR
+- **Automatic rule checks** (`lib/ruleChecks.ts`) — currently one check:
+  a document is flagged **Outdated Document** when its relevant date
+  field is more than 60 days in the past (Payslip's "Salary Period End
+  Date", Certificate of Employment's "Document Issued Date" — no rule
+  yet for loan/credit). Deliberately does **not** run automatically on
+  OCR load or on every keystroke — per explicit direction, it only runs
+  when the reviewer clicks the **"Submit OCR corrections"** button added
+  at the very end of the OCR editor, so it's always checking the
+  reviewer's own corrected value, never a possibly-misread raw OCR date
+  (see `forceTextIfDateOrNumeric`'s own comments on how often that
+  happens). That button is a separate, purely local action from the
+  Decision panel's actual "Submit & Next" — it never writes to Sheets by
+  itself, it only runs the check and, if triggered, sets
+  `rejectionReason`/`category`/`status` the same way picking a reason
+  from the dropdown does (see the Decision panel bullet below) — fully
+  overridable by the reviewer afterward, same as a manual pick. The
+  flagged field also gets an inline warning banner directly under
+  itself (a red-bordered input + explanation), per explicit direction
+  ("show a warning near the field"), not just a generic page-level
+  banner; every other outcome (a doc type with no rule, a field that
+  couldn't be found/parsed, or a genuine clean check) gets its own status
+  line under the button instead, so clicking it never feels like it did
+  nothing. Editing anything afterward clears the last check's result
+  (it's now stale) without touching whatever `rejectionReason`/
+  `category`/`status` are currently set to — those only get auto-cleared
+  if a **later** re-check comes back clean AND they still exactly match
+  what the rule itself set, so a reviewer's own manual override in
+  between is never silently overwritten. Covered by regression cases in
+  `verify:parser` (date parsing, both document types, the not-applicable/
+  unparseable paths) and confirmed end-to-end via Playwright against
+  demo mode — the demo fixture's own Certificate of Employment date
+  happened to be genuinely more than 60 days old as of this build, so
+  the "outdated" path was exercised against a real date comparison, not
+  only a synthetic one.
+  - **What happens right after the click** (per explicit direction — the
+    button's effect wasn't obvious enough before this): if the field a
+    check actually looked at needs the reviewer's attention — flagged as
+    outdated, or a date this couldn't even parse — the OCR panel
+    smooth-scrolls straight to that field's warning so it's on screen
+    without the reviewer having to go looking for it, and stays on the
+    OCR tab so they can either fix it and re-submit or leave the flag as
+    correct and move on themselves. Anything else — a clean check, or a
+    document type this rule doesn't apply to — has nothing left to look
+    at here, so it switches the panel to the Decision tab automatically.
+    `confirmOcrFields` (`usePortal.ts`) returns the check result it just
+    computed so `OcrEditor`'s click handler can act on it in the same
+    click, rather than a separate effect watching for the result to
+    change — an effect keyed off the result would re-fire every time the
+    OCR tab remounts (e.g. the reviewer switching back to it after being
+    moved to Decision), which would bounce them straight back. Verified
+    via Playwright: the outdated-coe case scrolls the flagged field into
+    the actual viewport (not just present somewhere off-screen) and
+    stays on OCR, a clean payslip case switches straight to Decision, and
+    fixing the flagged date and re-submitting also switches to Decision.
+- **Payslip auto-calculated fields** (`lib/payslipCalc.ts`,
+  `lib/calculator.ts`) — Payslip-only, per explicit direction:
+  - **Duration** recomputes automatically from Salary Period Start/End
+    Date (inclusive day count — confirmed against the real fixtures:
+    01/08–15/08 reads back as Duration "15") every time either date
+    changes, however that happened (typing directly, or via the OCR
+    load itself). Still a normal editable field — typing over it
+    sticks until one of the two dates changes again.
+  - **Gross Salary = Taxable Income + Non-Taxable Income; Net Salary =
+    Gross Salary − Deduction.** Taxable Income, Non-Taxable Income, and
+    Deduction are **brand new fields that exist only in this portal** —
+    per explicit direction, they're never written to the real OCR
+    sheet. That's a structural guarantee, not a runtime check: they
+    live in their own `payslipCalculator` state in `usePortal.ts`,
+    completely separate from `draftSections`/`OcrSection` — the one
+    data structure `buildFieldEdits` ever diffs to build a Sheets write,
+    so there is no code path that could leak them into it even by
+    accident.
+  - **A "calculator" convenience on five fields** — Taxable Income,
+    Non-Taxable Income, Deduction (the three new ones above), plus the
+    two real fields **SSS Premium** and **PhilHealth Premium** — per
+    explicit direction, each is two inputs: a raw sum the reviewer
+    types (e.g. `100+100`), and the evaluated total next to it (`200`),
+    via a small hand-written expression evaluator
+    (`lib/calculator.ts` → `evaluateExpression` — deliberately not
+    `eval`/`Function`, just +, −, ×, ÷ and parentheses). For SSS/
+    PhilHealth Premium the computed total syncs into that real field
+    (the expression box itself stays portal-only, same as the three new
+    fields). An untouched calculator field never overwrites a real,
+    OCR-extracted value with a guessed zero — Gross Salary only starts
+    computing once the reviewer has used Taxable or Non-Taxable Income
+    at least once, and Net Salary only once Gross is computing too
+    (Deduction alone, with neither income field touched, has nothing to
+    subtract from and is left alone).
+  - Every auto-calculated real field (Duration, Gross Salary, Net
+    Salary, SSS Premium, PhilHealth Premium) carries a small "⟳ AUTO"
+    badge next to its label, so it's visually clear why it might change
+    on its own — same visual language as the existing "▾ SHEET"/
+    "FALLBACK LIST" source badges elsewhere in this panel.
+  - Covered by regression cases in `verify:parser` (the expression
+    evaluator's arithmetic/edge cases, Duration's exact fixture-matched
+    day count, and the Gross/Net activation rules) and confirmed
+    end-to-end via Playwright against demo mode: editing Salary Period
+    End Date live-recomputes Duration, and filling in the calculator
+    fields correctly drives Gross Salary/Net Salary while leaving an
+    untouched PhilHealth Premium exactly as OCR left it.
+- **Decision panel** — OCR details is still the tab that opens by
+  default when a document is selected (correcting fields comes before
+  deciding); a brief change to default to Decision instead — reasoning
+  that most reviews end in a rejection — was reverted per explicit
+  direction, that didn't make sense as the starting point. Within the
+  Decision panel itself, Rejection Reason is the first field in it,
+  always visible rather than only appearing after clicking Reject: most
+  reviews end in a rejection, so the reviewer should be able to pick the
+  reason immediately without extra clicks once they get to that tab.
+  Picking a reason there sets
+  Category=Invalid and Decision=Manually Rejected automatically — the
+  common "reject with a reason" case is one click instead of three.
+  Approving is still a deliberate separate action (click Approve, pick
+  Valid), and switching to Approve after picking a reason clears it, same
+  as before. Below the reason: Category (Valid / Invalid / Incomplete),
+  Decision (Approve / Reject), Fraud Reason (multi-select, independent of
+  Category — confirmed it can apply regardless of
+  Valid/Invalid/Incomplete), Reclassify document type, and free-text
+  notes. Rejection Reason itself is a flat list per document type —
+  payslip/credit/loan/coe each have their own. Submit writes the OCR
   corrections and the decision back — in demo mode to local state, in
   live mode as two Sheets API batch writes (OCR tab, then the master
   row) — then advances to the next queued document.
@@ -208,6 +332,20 @@ real and clickable — only the data source is fake.
   a fallback for when a rule — or the Ref tab, or one of its columns —
   can't be read, tracked **per document type independently** (see
   `Taxonomy.source.rejectionReasonByDocType`), not as one blended flag.
+  All of the above (Category, Fraud Reason, Reclassify, Rejection Reason
+  by doc type) is read only **once per sign-in**, not per document or per
+  date-tab switch — the effect that calls `readLiveTaxonomy` depends only
+  on `user`. It's also cached to `sessionStorage` (`lib/taxonomy.ts` →
+  `loadCachedTaxonomy`/`saveCachedTaxonomy`) so a page refresh mid-shift
+  (a real scenario on a flaky connection) reuses it instantly instead of
+  re-reading the sheet — `sessionStorage` clears itself when the tab
+  closes, which is deliberately exactly "per session" and nothing longer,
+  so nobody's working off yesterday's rejection-reason list tomorrow.
+  **Company Category is the one exception** — it's read live, per
+  document, straight off that specific OCR tab's own cell
+  (`ocrParser.ts` → `attachFieldValidation`), a completely separate code
+  path that this cache never touches, since it's application-specific
+  rather than shared taxonomy.
 - **Date filter tabs** — only tabs named like `dd-mm-yyyy` (e.g.
   `03-09-2026`) are treated as a day's queue (`lib/masterSheet.ts` →
   `isDateTabTitle`). Other tabs living in the same spreadsheet for other
@@ -215,6 +353,33 @@ real and clickable — only the data source is fake.
   filtered out of the Date dropdown and can't accidentally become the
   "most recent tab" the app defaults to or samples Category/Fraud
   Reason/Reclassify's data-validation from.
+- **Retry with backoff** — every Sheets/Drive request (reads and writes
+  alike) automatically retries a couple of times with exponential backoff
+  on a transient failure (`lib/retry.ts` → `withRetry`, used by
+  `sheetsApi.ts` and `driveApi.ts`) — a dropped packet on a weak
+  connection shouldn't force a reviewer to manually retry by hand. Never
+  retries a deliberate cancellation (an aborted request — see the
+  AbortController wiring above) or an auth/permission error (401/403/
+  404), since a retry can't fix either of those.
+- **Self-hosted fonts, deferred sign-in script** — IBM Plex Sans/Mono are
+  bundled via `@fontsource` (imported in `main.tsx`) instead of pulled
+  from an external fonts.googleapis.com stylesheet, removing a render-
+  blocking round trip on every fresh load. Google Identity Services'
+  script is no longer loaded unconditionally in `index.html` either —
+  `lib/googleAuth.ts` → `loadGsiScript` injects it lazily on the first
+  actual `signIn()` call, so a returning reviewer with a still-valid
+  stored token (the common case) never fetches it at all. `index.html`
+  also preconnects to `sheets.googleapis.com`/`www.googleapis.com` now,
+  the two domains that matter most for this app's own data, not just the
+  font host.
+- **Queue list rendering** — each row is a memoized component
+  (`QueueRow` in `components/QueueList.tsx`) so an unrelated re-render
+  (search input, sync-status ticking, a filter change) doesn't re-render
+  every row in the queue, only the ones whose own data actually changed.
+  Each row also sets `content-visibility: auto`, a cheap browser-native
+  way to skip layout/paint work for rows currently scrolled out of view —
+  matters more as a lightly-filtered queue on a big date tab grows into
+  hundreds of live rows.
 
 ## What "protected" means here — and what's still just a display problem in Sheets
 
@@ -239,6 +404,25 @@ implemented per the Sheets API v4 contract but **haven't been exercised
 against the real spreadsheets yet**. Treat live mode as needing a
 verification pass, not as proven:
 
+- **Request cancellation + next-image prefetch** — three related changes
+  to `hooks/usePortal.ts`'s image/OCR-doc effects, all real-mode-only
+  code paths that (like everything else in this section) haven't been
+  exercised against a live Drive/Sheets session: (1) the OCR-doc load no
+  longer waits on `attachFieldValidation`'s validation-option lookup
+  before rendering fields — they appear as soon as parsed, with live
+  suggestions (Company Category) patched in a moment later; (2) the
+  image and OCR-doc fetches now carry a real `AbortController`, so
+  switching rows mid-download actually stops the request instead of just
+  ignoring its result; (3) the next queue row's image is speculatively
+  prefetched once the current one finishes loading, skipped on a
+  connection the Network Information API reports as slow/metered
+  (`driveApi.ts` → `isSlowConnection`), bounded to exactly one row ahead.
+  Demo mode doesn't exercise any of this (it has no real Drive files to
+  fetch), so this was only verified by confirming demo mode itself still
+  works correctly end to end — the actual network behavior (does the
+  abort really cancel the in-flight request, does the prefetched blob
+  get picked up on the next click, does `navigator.connection` behave as
+  expected in a real browser) needs a check against live credentials.
 - **PDF rendering** — the mechanism (fetch bytes via the Drive API,
   detect `application/pdf` from the response's content type, embed the
   resulting blob URL in an `<iframe>`) is confirmed to work as a browser
@@ -248,21 +432,41 @@ verification pass, not as proven:
   *real* PDF coming out of the actual master sheet's Drive Link column,
   so still worth a real check.
 - ~~Resolving `Image URL` / `Drive Link` / `Sheet URL`~~ — **confirmed
-  working** against the live sheet: `sheetsApi.getGridData`'s `hyperlink`
-  field read does resolve these link chips correctly.
-  One correction and one follow-on issue found: the document image is
-  resolved from **`Drive Link`, not `Image URL`** — the two columns aren't
-  interchangeable (per the user; what `Image URL` is actually for is still
-  an open question). And the resolved Drive Link is a Drive *view* link
-  (an HTML viewer page — fine for the "Open in Drive" navigation, which is
-  a plain `<a href>`), not a raw-image URL, so it can't be dropped
-  directly into an `<img src>`. `lib/driveApi.ts` now
-  fetches the file's actual bytes through the Drive API (with the
-  reviewer's own token) and hands the browser a `blob:` URL instead — see
-  its comments for the full reasoning. Still worth watching for: this
-  will surface a 403 if a reviewer's account can see the *sheet* but not
-  the underlying *image file* in Drive (they're separate permissions) —
-  `imageLoadError` in the UI will say so explicitly if that happens.
+  working** against the live sheet, with one real bug found and fixed
+  along the way. `sheetsApi.getGridData`'s `hyperlink` field read
+  resolves a classic blue-underlined link or `HYPERLINK()` formula
+  correctly (confirmed for `Sheet URL`, whose visible cell text is the
+  full URL itself) — but `Image URL` and `Drive Link` turned out to be
+  rendered as Sheets **Smart Chips** instead (the pill-with-icon link
+  style; the cell's visible text is just a short label like "File
+  Link"/"Drive Link", never the URL). A smart chip's target URL lives in
+  a completely different API field, `chipRuns`, which `hyperlink` never
+  covers — so those two columns were silently resolving to a `null`
+  href on every row: an unclickable "Open in Drive" button, and no
+  document image ever loading, despite the chip clearly working when
+  clicked directly in Sheets. Found by pulling the real sheet's raw
+  content directly and noticing `Image URL`/`Drive Link` never showed an
+  actual URL anywhere, unlike `Sheet URL`. `sheetsApi.ts`'s `GridCell`
+  now also requests/exposes `chipRuns`, and `masterSheet.ts`'s `link()`
+  helper falls back to the first chip run's URI when `hyperlink` is
+  absent — `hyperlink` still wins when a cell genuinely has both.
+  Covered by a regression case in `verify:parser` reproducing this exact
+  cell shape (a chip-only Image URL/Drive Link alongside a
+  hyperlink-only Sheet URL, so the fallback is confirmed to fire only
+  where it should).
+  One correction and one follow-on issue found earlier, still true: the
+  document image is resolved from **`Drive Link`, not `Image URL`** — the
+  two columns aren't interchangeable (per the user; what `Image URL` is
+  actually for is still an open question). And the resolved Drive Link is
+  a Drive *view* link (an HTML viewer page — fine for the "Open in Drive"
+  navigation, which is a plain `<a href>`), not a raw-image URL, so it
+  can't be dropped directly into an `<img src>`. `lib/driveApi.ts` fetches
+  the file's actual bytes through the Drive API (with the reviewer's own
+  token) and hands the browser a `blob:` URL instead — see its comments
+  for the full reasoning. Still worth watching for: this will surface a
+  403 if a reviewer's account can see the *sheet* but not the underlying
+  *image file* in Drive (they're separate permissions) — `imageLoadError`
+  in the UI will say so explicitly if that happens.
 - **Data-validation reads** (`readLiveTaxonomy`) — the rejection-reason
   dropdown still looked incomplete after adding `ONE_OF_RANGE` support
   (previous entry below). First found and fixed one real cause:
@@ -346,8 +550,10 @@ verification pass, not as proven:
   independent fields, each set directly by the reviewer (a "Document
   category" control for Valid/Invalid/Incomplete, a separate "Decision"
   control for Approve/Reject) — not one derived from the other. A Valid
-  document can still be Rejected. Rejection Reason is gated on
-  Decision=Reject, not on Category.
+  document can still be Rejected. Rejection Reason's *requirement* for
+  Submit is still gated on Decision=Reject, not on Category — but per
+  later direction the field itself is always visible (see the Decision
+  panel bullet above), not only shown once Reject is picked.
 - ~~"Pending" means a blank Status cell~~ — **wrong, found via the "Pending
   review" filter matching nothing against the real prod sheet.** The
   assumption (from the original discovery pass, before there was a live

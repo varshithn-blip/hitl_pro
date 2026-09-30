@@ -14,6 +14,33 @@ const STORAGE_KEY = 'hitl-review-portal.auth'
 
 let tokenClient: ReturnType<NonNullable<Window['google']>['accounts']['oauth2']['initTokenClient']> | null = null
 
+// Loaded lazily, on the first actual sign-in attempt, rather than
+// unconditionally on every page load (it used to be an unconditional
+// <script> tag in index.html) — a returning reviewer with a still-valid
+// stored token (see loadStoredUser below) never calls signIn() at all in
+// that session, so they never pay for fetching/parsing this external
+// script either. Memoized so a second signIn() call (e.g. after a token
+// expired) reuses the same injected script instead of adding another.
+let gsiScriptPromise: Promise<void> | null = null
+
+function loadGsiScript(): Promise<void> {
+  if (window.google) return Promise.resolve()
+  if (!gsiScriptPromise) {
+    gsiScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = 'https://accounts.google.com/gsi/client'
+      script.async = true
+      script.onload = () => resolve()
+      script.onerror = () => {
+        gsiScriptPromise = null // let a later retry try again, rather than staying stuck on one failed load
+        reject(new Error('Failed to load Google Identity Services'))
+      }
+      document.head.appendChild(script)
+    })
+  }
+  return gsiScriptPromise
+}
+
 function loadStoredUser(): AuthedUser | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -49,22 +76,26 @@ async function fetchProfile(accessToken: string): Promise<{ name: string; email:
 /** Every reviewer signs in with their own Google account (see plan notes —
  * no shared service account); this just wraps Google Identity Services'
  * token-client flow so callers get back a plain access token + profile.
+ * Loads the GSI script lazily on first call (see loadGsiScript above) —
+ * a returning reviewer with a still-valid stored token never reaches
+ * this function at all, so they never pay for that fetch.
  * NOTE: unverified against a live Google Cloud OAuth client in this build
  * pass — see README "Known gaps". */
-export function signIn(): Promise<AuthedUser> {
-  return new Promise((resolve, reject) => {
-    if (!CONFIG.googleClientId) {
-      reject(new Error('VITE_GOOGLE_CLIENT_ID is not configured'))
-      return
-    }
-    if (!window.google) {
-      reject(new Error('Google Identity Services script has not loaded yet'))
-      return
-    }
+export async function signIn(): Promise<AuthedUser> {
+  const googleClientId = CONFIG.googleClientId
+  if (!googleClientId) {
+    throw new Error('VITE_GOOGLE_CLIENT_ID is not configured')
+  }
+  await loadGsiScript()
+  const google = window.google
+  if (!google) {
+    throw new Error('Google Identity Services script has not loaded yet')
+  }
 
+  return new Promise((resolve, reject) => {
     if (!tokenClient) {
-      tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: CONFIG.googleClientId,
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: googleClientId,
         scope: SHEETS_SCOPES,
         callback: async (response) => {
           if (response.error || !response.access_token) {

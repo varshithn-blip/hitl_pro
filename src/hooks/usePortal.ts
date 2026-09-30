@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CONFIG, DEMO_MODE } from '../lib/config'
-import { extractDriveFileId, fetchDriveFileObjectUrl } from '../lib/driveApi'
+import { extractDriveFileId, fetchDriveFileObjectUrl, isSlowConnection } from '../lib/driveApi'
 import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAuth'
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
+import { computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR, PAYSLIP_DATE_FIELDS, PAYSLIP_SALARY_FIELDS, type PayslipCalculatorInputs } from '../lib/payslipCalc'
+import { checkOutdatedDocument, OUTDATED_DOCUMENT_REASON, type OutdatedCheckResult } from '../lib/ruleChecks'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
-import { baseDocType, mergeTaxonomy } from '../lib/taxonomy'
+import { baseDocType, loadCachedTaxonomy, mergeTaxonomy, saveCachedTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, masterRowKey, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
 const EMPTY_DRAFT: DecisionDraft = { category: '', status: '', rejectionReason: '', fraudReason: [], reclassified: '', flags: '' }
@@ -50,6 +52,7 @@ export function usePortal() {
     status: 'Pending',
     apiCalled: 'all',
     documentType: 'All',
+    startAfterRow: null,
   })
   const [search, setSearch] = useState('')
 
@@ -62,10 +65,37 @@ export function usePortal() {
   const [draftSections, setDraftSections] = useState<OcrSection[] | null>(null)
   const [decisionDraft, setDecisionDraft] = useState<DecisionDraft>(EMPTY_DRAFT)
   const [loadingDoc, setLoadingDoc] = useState(false)
+  /** Result of the last "Submit OCR corrections" click (see
+   * `confirmOcrFields` below) — null until the reviewer has clicked it
+   * at least once for the current document, or once they've edited
+   * anything since the last click (the result is now stale — see
+   * `editField`/`editTableCell`). Deliberately NOT run automatically on
+   * every OCR load/edit: the whole point is to check the reviewer's own
+   * corrected values, never a possibly-misread raw OCR date, so this
+   * only ever updates from an explicit click. */
+  const [ocrCheckResult, setOcrCheckResult] = useState<OutdatedCheckResult | null>(null)
+  /** Portal-only inputs for the Payslip "Salary Calculator" (Taxable/
+   * Non-Taxable Income, Deduction, plus a convenience sum for SSS/
+   * PhilHealth Premium) — see payslipCalc.ts. Deliberately kept
+   * completely separate from `draftSections`/OcrSection, never merged
+   * into it: that's what makes "these three fields never touch the
+   * real OCR sheet" a structural guarantee rather than a runtime flag
+   * that could have an edge-case bug — buildFieldEdits only ever reads
+   * draftSections vs currentDoc.sections, and this state doesn't exist
+   * in either, so there is no code path that could write it back. */
+  const [payslipCalculator, setPayslipCalculator] = useState<PayslipCalculatorInputs>(EMPTY_PAYSLIP_CALCULATOR)
 
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const [imagePreviewType, setImagePreviewType] = useState<string | null>(null)
   const [imageLoadError, setImageLoadError] = useState<string | null>(null)
+  /** At most one entry: the next queue row's already-downloaded image,
+   * fetched speculatively while the reviewer was still looking at the
+   * current one — see the prefetch effect below. A plain ref, not state:
+   * nothing renders from this directly, it's purely a cache the image-
+   * loading effect checks before deciding whether it needs to fetch at
+   * all. */
+  const prefetchedImageRef = useRef<{ rowKey: string; url: string; mimeType: string } | null>(null)
+  const prefetchingKeyRef = useRef<string | null>(null)
 
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncMessage, setSyncMessage] = useState<string | undefined>()
@@ -104,10 +134,26 @@ export function usePortal() {
           .map((t) => t.title)
         setDateTabs(dateTitles)
         setFilters((f) => ({ ...f, date: f.date || dateTitles[0] || '' }))
-        const sampleTabTitle = dateTitles[0] ?? tabs[0]?.title
-        if (sampleTabTitle) {
-          const live = await readLiveTaxonomy(CONFIG.masterSheetId!, sampleTabTitle, tabs, user.accessToken)
-          if (!cancelled) setTaxonomy(mergeTaxonomy(live))
+
+        // Category / Fraud Reason / Reclassify / Rejection-Reason-by-type
+        // only ever need reading once per browser-tab session — see the
+        // cache's own comment in taxonomy.ts for why sessionStorage is the
+        // right lifetime for this specifically. A cache hit skips the
+        // network read entirely; nothing here touches Company Category,
+        // which stays a live, per-document read regardless (see
+        // usePortal's OCR-load effect / ocrParser.ts attachFieldValidation).
+        const cachedTaxonomy = loadCachedTaxonomy()
+        if (cachedTaxonomy) {
+          setTaxonomy(mergeTaxonomy(cachedTaxonomy))
+        } else {
+          const sampleTabTitle = dateTitles[0] ?? tabs[0]?.title
+          if (sampleTabTitle) {
+            const live = await readLiveTaxonomy(CONFIG.masterSheetId!, sampleTabTitle, tabs, user.accessToken)
+            if (!cancelled) {
+              setTaxonomy(mergeTaxonomy(live))
+              saveCachedTaxonomy(live)
+            }
+          }
         }
       } catch (err) {
         if (!cancelled) setRowsError(err instanceof Error ? err.message : 'Failed to load the master sheet')
@@ -125,6 +171,12 @@ export function usePortal() {
   // that was crashing/hanging the browser. The queue becomes usable after
   // the first batch; loadingRows only covers that initial wait, while
   // rowsLoadProgress tracks the rest streaming in behind it.
+  //
+  // filters.startAfterRow re-triggers this the same as switching dates —
+  // "start after row 500" means the rows before it are never fetched at
+  // all, not merely filtered out of the queue view once loaded, so this
+  // has to restart the fetch from scratch at the new starting point
+  // rather than just re-filtering what's already in masterRows.
   useEffect(() => {
     if (DEMO_MODE || !user || !CONFIG.masterSheetId || !filters.date) return
     let cancelled = false
@@ -132,6 +184,7 @@ export function usePortal() {
     setRowsError(null)
     setRowsLoadProgress(null)
     setMasterRows([])
+    const startRow = filters.startAfterRow != null ? filters.startAfterRow + 1 : 2
     ;(async () => {
       let firstBatch = true
       try {
@@ -149,6 +202,7 @@ export function usePortal() {
             }
           },
           () => !cancelled,
+          startRow,
         )
       } catch (err) {
         if (!cancelled) setRowsError(err instanceof Error ? err.message : 'Failed to load documents for this date')
@@ -162,11 +216,18 @@ export function usePortal() {
     return () => {
       cancelled = true
     }
-  }, [user, filters.date])
+  }, [user, filters.date, filters.startAfterRow])
 
   // --- Derived: filtered queue ------------------------------------------
   const filteredRows = useMemo(() => {
     return masterRows.filter((row) => {
+      // In real mode this is a no-op — fetchMasterRows already skipped
+      // fetching these rows in the first place (see the load effect
+      // above), so masterRows never contains them. Kept here too so demo
+      // mode (which has no fetch to skip, just the static fixture list)
+      // still honors the filter, and as a harmless belt-and-suspenders
+      // check in real mode.
+      if (filters.startAfterRow != null && row.rowIndex <= filters.startAfterRow) return false
       if (filters.reviewer !== 'All' && row.reviewer !== filters.reviewer) return false
       if (filters.status === 'Pending' && !isPendingStatus(row.status)) return false
       if (filters.status !== 'All' && filters.status !== 'Pending' && row.status !== filters.status) return false
@@ -221,6 +282,8 @@ export function usePortal() {
   useEffect(() => {
     setCurrentDoc(null)
     setDraftSections(null)
+    setOcrCheckResult(null)
+    setPayslipCalculator(EMPTY_PAYSLIP_CALCULATOR)
 
     if (!selectedRow) {
       setDecisionDraft(EMPTY_DRAFT)
@@ -238,6 +301,12 @@ export function usePortal() {
 
     if (!user) return
     let cancelled = false
+    // Actually stops the request, not just its effect on state: without
+    // this, switching rows mid-fetch still lets the abandoned request run
+    // to completion in the background (the `cancelled` flag only guards
+    // against acting on its result) — wasted bandwidth on a weak
+    // connection if a reviewer moves through the queue quickly.
+    const controller = new AbortController()
     setLoadingDoc(true)
     ;(async () => {
       try {
@@ -249,15 +318,54 @@ export function usePortal() {
         // suggestions (see attachFieldValidation). OCR tabs are small
         // (a few dozen rows), so this doesn't carry the cost that made
         // the master sheet's row list switch away from it.
-        const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken)
+        const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken, { signal: controller.signal })
         if (cancelled) return
         const rows = grid.map((row) => row.map((cell) => cell?.formattedValue ?? ''))
         const parsedDoc = parseOcrRows(rows)
-        const sections = await attachFieldValidation(parsedDoc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
-        if (cancelled) return
-        const doc: OcrDocument = { rowKey, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc, sections }
+        const doc: OcrDocument = { rowKey, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc }
+        // Render the fields NOW, without waiting on attachFieldValidation
+        // below — every field already has its real value at this point;
+        // all that's still missing is which ONE of them (Company
+        // Category, in practice) gets live dropdown suggestions. Resolving
+        // that can mean a second network round trip (extractValidationList
+        // follows a ONE_OF_RANGE rule to the range it points at) — on a
+        // slow connection that shouldn't hold up the whole document
+        // appearing on screen for a lookup only one field needs.
         setCurrentDoc(doc)
         setDraftSections(structuredClone(doc.sections))
+        setLoadingDoc(false)
+
+        attachFieldValidation(doc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
+          .then((sections) => {
+            if (cancelled) return
+            // Patch validationOptions into whichever field each came from
+            // (matched by rowIndex, the stable per-field identity used
+            // elsewhere in this file) rather than replacing the sections
+            // wholesale — draftSections may already hold reviewer edits
+            // made in the window while this was still resolving, and
+            // those must survive untouched.
+            const patch = (current: OcrSection[] | null) =>
+              current === null
+                ? current
+                : current.map((section, i) => {
+                    const resolved = sections[i]
+                    if (section.kind !== 'fields' || resolved?.kind !== 'fields') return section
+                    return {
+                      ...section,
+                      fields: section.fields.map((f) => {
+                        const match = resolved.fields.find((rf) => rf.rowIndex === f.rowIndex)
+                        return match ? { ...f, validationOptions: match.validationOptions } : f
+                      }),
+                    }
+                  })
+            setCurrentDoc((prev) => (prev && prev.rowKey === rowKey ? { ...prev, sections: patch(prev.sections) ?? prev.sections } : prev))
+            setDraftSections((prev) => patch(prev))
+          })
+          .catch(() => {
+            // Live suggestions are a nice-to-have, not a requirement —
+            // every field is already a fully working plain-text input
+            // without them. Never surface this as a document-load error.
+          })
       } catch (err) {
         if (!cancelled) {
           setCurrentDoc(null)
@@ -271,6 +379,7 @@ export function usePortal() {
     })()
     return () => {
       cancelled = true
+      controller.abort()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRow && masterRowKey(selectedRow), user])
@@ -303,11 +412,34 @@ export function usePortal() {
       return
     }
 
+    // A prefetch kicked off while the reviewer was still on the PREVIOUS
+    // row may already have this exact row's image sitting in memory (see
+    // the prefetch effect below) — use it directly and skip the network
+    // fetch entirely. Ownership of the blob URL transfers to this
+    // effect's own `objectUrl`/cleanup below, same as a normal fetch, so
+    // it still gets revoked correctly when the reviewer moves on.
+    const rowKey = masterRowKey(selectedRow)
+    const prefetched = prefetchedImageRef.current
+    if (prefetched && prefetched.rowKey === rowKey) {
+      prefetchedImageRef.current = null
+      setImagePreviewUrl(prefetched.url)
+      setImagePreviewType(prefetched.mimeType)
+      return
+    }
+
     let cancelled = false
     let objectUrl: string | null = null
+    // Same reasoning as the OCR-doc effect's controller: without actually
+    // aborting, switching rows mid-download still lets the old row's
+    // (often multi-MB) file finish downloading in the background — the
+    // single most wasteful case of this on a weak connection, since a
+    // reviewer clicking through 3-4 queue cards quickly would otherwise
+    // leave that many image downloads competing for the same limited
+    // bandwidth, none of them shown.
+    const controller = new AbortController()
     ;(async () => {
       try {
-        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken)
+        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken, controller.signal)
         if (cancelled) {
           URL.revokeObjectURL(preview.url)
         } else {
@@ -322,6 +454,7 @@ export function usePortal() {
 
     return () => {
       cancelled = true
+      controller.abort()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
     // masterRowKey, not requestId — two rows can share a Request ID
@@ -331,7 +464,79 @@ export function usePortal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRow && masterRowKey(selectedRow), user])
 
+  // --- Prefetch the NEXT queue row's image ----------------------------
+  // Kicks off once the CURRENT row's own image fetch has settled
+  // (imagePreviewUrl or imageLoadError going non-null) — deliberately
+  // never starts alongside it, so it never competes with what's actually
+  // on screen for a slow connection's limited bandwidth. Bounded to
+  // exactly one row ahead (prefetchedImageRef holds at most one entry,
+  // replacing — and revoking — whatever was there before) and skipped
+  // entirely on a connection that already looks slow or metered (see
+  // isSlowConnection) — prefetching there would just spend bandwidth the
+  // reviewer needs for the document actually in front of them, on a
+  // document they might not even reach next (filters/search can still
+  // change, a queue jump via "Start after row" can happen, ...).
+  useEffect(() => {
+    if (DEMO_MODE || !user || !selectedRowKey) return
+    if (imagePreviewUrl === null && imageLoadError === null) return // current row hasn't settled yet
+    if (isSlowConnection()) return
+
+    const currentIdx = filteredRows.findIndex((r) => masterRowKey(r) === selectedRowKey)
+    const nextRow = currentIdx >= 0 ? filteredRows[currentIdx + 1] : undefined
+    if (!nextRow) return
+    const nextKey = masterRowKey(nextRow)
+    // Already have it, or already fetching it — nothing to do.
+    if (prefetchedImageRef.current?.rowKey === nextKey || prefetchingKeyRef.current === nextKey) return
+
+    const fileId = extractDriveFileId(nextRow.driveLink.href)
+    if (!fileId) return
+
+    let cancelled = false
+    const controller = new AbortController()
+    prefetchingKeyRef.current = nextKey
+    ;(async () => {
+      try {
+        const preview = await fetchDriveFileObjectUrl(fileId, user.accessToken, controller.signal)
+        if (cancelled || prefetchingKeyRef.current !== nextKey) {
+          URL.revokeObjectURL(preview.url)
+          return
+        }
+        // Bounded to one entry: drop whatever was cached before (it was
+        // for a row that's no longer "next" — e.g. the reviewer jumped
+        // via a filter change — and was never consumed) rather than
+        // letting it pile up.
+        if (prefetchedImageRef.current) URL.revokeObjectURL(prefetchedImageRef.current.url)
+        prefetchedImageRef.current = { rowKey: nextKey, ...preview }
+      } catch {
+        // A failed prefetch is fine to just drop — the main image effect
+        // above does its own normal fetch, with its own error handling,
+        // once the reviewer actually reaches this row.
+      } finally {
+        if (prefetchingKeyRef.current === nextKey) prefetchingKeyRef.current = null
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [user, selectedRowKey, imagePreviewUrl, imageLoadError, filteredRows])
+
+  // Revoke a still-cached prefetch on unmount — the tab closing/
+  // navigating away is the one case nothing else above already covers.
+  useEffect(() => {
+    return () => {
+      if (prefetchedImageRef.current) URL.revokeObjectURL(prefetchedImageRef.current.url)
+    }
+  }, [])
+
   // --- OCR field/table edit handlers ------------------------------------
+  // Every one of these also clears ocrCheckResult: any edit means the
+  // last "Submit OCR corrections" result (see confirmOcrFields below) no
+  // longer reflects what's actually in the draft, so the inline warning
+  // (and the button's status line) disappear until the reviewer clicks
+  // it again — never leaving a stale check displayed against values that
+  // have since changed.
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {
     setDraftSections((prev) => {
       if (!prev) return prev
@@ -340,6 +545,7 @@ export function usePortal() {
       if (section.kind === 'fields') section.fields[fieldIndex].value = value
       return next
     })
+    setOcrCheckResult(null)
   }, [])
 
   const editTableCell = useCallback((sectionIndex: number, rowIndex: number, colIndex: number, value: string) => {
@@ -353,6 +559,7 @@ export function usePortal() {
       }
       return next
     })
+    setOcrCheckResult(null)
   }, [])
 
   const addTableRow = useCallback((sectionIndex: number) => {
@@ -366,6 +573,7 @@ export function usePortal() {
       }
       return next
     })
+    setOcrCheckResult(null)
   }, [])
 
   const removeTableRow = useCallback((sectionIndex: number, rowIndex: number) => {
@@ -376,7 +584,113 @@ export function usePortal() {
       if (section.kind === 'table') section.rows = section.rows.filter((r) => r.rowIndex !== rowIndex)
       return next
     })
+    setOcrCheckResult(null)
   }, [])
+
+  // --- "Submit OCR corrections" (the button at the end of the OCR editor) ---
+  // Deliberately a separate, purely local action from the real `submit`
+  // below — it never talks to Sheets, it only runs the rule check(s)
+  // against whatever the reviewer has corrected the OCR fields to be.
+  // Per explicit direction: this exists specifically so a rule like
+  // "flag as outdated" never fires against a raw, possibly-misread OCR
+  // date — only once the reviewer has confirmed (by clicking this) that
+  // the fields are actually correct.
+  //
+  // Returns the freshly computed result (in addition to storing it in
+  // state) so the caller — OcrEditor's click handler — can react to it
+  // immediately: scroll to the flagged field, or move on to the Decision
+  // tab, in the very same click rather than via a separate effect. An
+  // effect watching `ocrCheckResult` would re-fire every time OcrEditor
+  // remounts (e.g. the reviewer switches back to the OCR tab after this
+  // already navigated them to Decision), which would bounce them right
+  // back — a one-shot return value avoids that entirely.
+  const confirmOcrFields = useCallback((): OutdatedCheckResult | null => {
+    if (!selectedRow || !draftSections) return null
+    const docType = baseDocType(selectedRow.documentType)
+    const result = checkOutdatedDocument(docType, draftSections)
+    setOcrCheckResult(result)
+
+    if (result.status === 'outdated') {
+      setDecisionDraft((prev) => ({ ...prev, rejectionReason: OUTDATED_DOCUMENT_REASON, category: 'Invalid', status: 'Manually Rejected' }))
+    } else {
+      // Undo exactly what a PRIOR confirm on this same document may have
+      // set — but only if nothing has touched those three fields since
+      // (an exact match against what the rule itself writes). A reviewer
+      // fixing the flagged date and re-confirming should un-flag it;
+      // a reviewer who manually picked a different category/reason in
+      // between must never have that choice silently overwritten here.
+      setDecisionDraft((prev) =>
+        prev.rejectionReason === OUTDATED_DOCUMENT_REASON && prev.category === 'Invalid' && prev.status === 'Manually Rejected'
+          ? { ...prev, rejectionReason: '', category: '', status: '' }
+          : prev,
+      )
+    }
+    return result
+  }, [selectedRow, draftSections])
+
+  const setPayslipCalculatorExpr = useCallback((field: keyof PayslipCalculatorInputs, value: string) => {
+    setPayslipCalculator((prev) => ({ ...prev, [field]: value }))
+  }, [])
+
+  /** Writes a computed value into a REAL OCR field by label, in-place
+   * within draftSections — but only if that field actually exists and
+   * the value genuinely differs from what's there, so this can be
+   * called on every render-triggering change below without ever
+   * causing an extra one: setDraftSections bails out on an identical
+   * array reference when nothing changed. `computed === null` ("nothing
+   * to sync yet" — see computePayslipAutoFields) is a no-op, never a
+   * blank-out; a field this hasn't computed anything for yet is left
+   * exactly as OCR (or the reviewer) left it. */
+  const syncComputedField = useCallback((label: string, computed: string | null) => {
+    if (computed === null) return
+    setDraftSections((prev) => {
+      if (!prev) return prev
+      for (let sIdx = 0; sIdx < prev.length; sIdx++) {
+        const section = prev[sIdx]
+        if (section.kind !== 'fields') continue
+        const fIdx = section.fields.findIndex((f) => f.label === label)
+        if (fIdx === -1) continue
+        if (section.fields[fIdx].value === computed) return prev
+        const next = structuredClone(prev)
+        const nextSection = next[sIdx]
+        if (nextSection.kind === 'fields') nextSection.fields[fIdx].value = computed
+        return next
+      }
+      return prev
+    })
+  }, [])
+
+  // --- Payslip auto-calculated fields -----------------------------------
+  // Per explicit direction: Duration is derived from Salary Period
+  // Start/End Date; Gross Salary/Net Salary/SSS Premium/PhilHealth
+  // Premium are derived from the portal-only calculator above. Re-
+  // derives from CURRENT state on every relevant change — however it
+  // happened (typing in a date field, typing in the calculator, the
+  // initial OCR load) — rather than hooking into individual handlers,
+  // so it can never fall out of sync with what's actually on screen.
+  // Every field stays independently editable by hand regardless: typing
+  // directly into e.g. Duration sticks until its OWN source (the two
+  // date fields) changes again, at which point it's recomputed.
+  useEffect(() => {
+    if (!selectedRow || !draftSections) return
+    if (baseDocType(selectedRow.documentType) !== 'payslip') return
+
+    const findValue = (label: string): string | null => {
+      for (const section of draftSections) {
+        if (section.kind !== 'fields') continue
+        const field = section.fields.find((f) => f.label === label)
+        if (field) return field.value
+      }
+      return null
+    }
+
+    const auto = computePayslipAutoFields(findValue(PAYSLIP_DATE_FIELDS.start), findValue(PAYSLIP_DATE_FIELDS.end), payslipCalculator)
+    syncComputedField(PAYSLIP_DATE_FIELDS.duration, auto.duration)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.grossSalary, auto.grossSalary)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.netSalary, auto.netSalary)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.sssPremium, auto.sssPremium)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.philHealthPremium, auto.philHealthPremium)
+  }, [selectedRow, draftSections, payslipCalculator, syncComputedField])
 
   // --- Submit -------------------------------------------------------------
   const submit = useCallback(async () => {
@@ -485,6 +799,10 @@ export function usePortal() {
     editTableCell,
     addTableRow,
     removeTableRow,
+    ocrCheckResult,
+    confirmOcrFields,
+    payslipCalculator,
+    setPayslipCalculatorExpr,
 
     submit,
     syncState,

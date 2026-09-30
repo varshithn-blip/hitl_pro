@@ -311,6 +311,11 @@ export function ImageViewer({ row, imagePreviewUrl, imagePreviewType, imageLoadE
                     src={imagePreviewUrl}
                     alt="Document"
                     draggable={false}
+                    // Off the main thread — a phone-camera scan can be a
+                    // large image, and decoding it synchronously (the
+                    // default) can visibly jank the page on a slow CPU
+                    // right as it appears.
+                    decoding="async"
                     style={{ display: 'block', width: BASE_DISPLAY_WIDTH * (zoom / 100), borderRadius: 3, boxShadow: '0 12px 28px -8px oklch(20% 0.02 255 / 0.22)' }}
                   />
                 ) : (

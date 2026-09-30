@@ -231,4 +231,12 @@ export interface QueueFilters {
    * reviewer filtering by type means "show me payslips", not "show me
    * specifically the 2nd loan doc of a transaction". */
   documentType: string | 'All'
+  /** Skip straight to this sheet row (1-based, matching `MasterRow.
+   * rowIndex` — header is row 1, first data row is 2) instead of
+   * reviewing from the top of the date tab. Rows before this are never
+   * fetched at all, not just hidden — see `fetchMasterRows`'s `startRow`
+   * param — so this doubles as a bandwidth saver on a big tab, not only
+   * a "resume where I left off" convenience. `null`/unset means start
+   * from the beginning, same as before this filter existed. */
+  startAfterRow: number | null
 }

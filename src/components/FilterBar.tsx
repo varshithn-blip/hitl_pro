@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { docTypeBadge } from '../lib/presentation'
 import type { ApiCalledFilter, QueueFilters } from '../lib/types'
 import { ChevronDown, Search } from './icons'
@@ -58,6 +59,64 @@ const API_CALLED_OPTIONS: { value: ApiCalledFilter; label: string }[] = [
   { value: 'done', label: 'Done only' },
   { value: 'not_done', label: 'Not done' },
 ]
+
+/** Unlike every other filter here, changing this one triggers a real
+ * network re-fetch from a different starting row (see fetchMasterRows'
+ * `startRow`) — not just a client-side re-filter of rows already in
+ * memory. Firing that on every keystroke would mean typing "500" fetches
+ * three times (for "5", "50", "500"), the opposite of what this filter
+ * is for on a weak connection. So this keeps its own local draft and only
+ * commits — calling onChange, which is what actually kicks off the
+ * re-fetch — on blur or Enter, same as a normal "apply" field. */
+function StartAfterRowInput({ value, onChange }: { value: number | null; onChange: (next: number | null) => void }) {
+  const [draft, setDraft] = useState(value != null ? String(value) : '')
+
+  // Keep the draft in sync if the real value changes from elsewhere (e.g.
+  // switching date tabs doesn't touch this filter, but a future "clear
+  // all filters" action might).
+  useEffect(() => {
+    setDraft(value != null ? String(value) : '')
+  }, [value])
+
+  const commit = () => {
+    const trimmed = draft.trim()
+    const parsed = trimmed === '' ? null : Math.max(1, Math.floor(Number(trimmed)))
+    const next = parsed != null && Number.isFinite(parsed) ? parsed : null
+    setDraft(next != null ? String(next) : '')
+    if (next !== value) onChange(next)
+  }
+
+  return (
+    <div
+      title="Skip rows up to and including this sheet row number — e.g. 500 to start reviewing at row 501. Those earlier rows are never fetched, not just hidden."
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '7px 12px',
+        border: '1px solid var(--border-strong)',
+        borderRadius: 8,
+        background: 'var(--bg-panel)',
+        width: 168,
+      }}
+    >
+      <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Start after row</span>
+      <input
+        type="number"
+        min={1}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur() // triggers onBlur -> commit
+          if (e.key === 'Escape') setDraft(value != null ? String(value) : '')
+        }}
+        placeholder="e.g. 500"
+        style={{ border: 'none', outline: 'none', background: 'none', fontSize: 12.5, width: '100%', minWidth: 0 }}
+      />
+    </div>
+  )
+}
 
 interface Props {
   dateTabs: string[]
@@ -129,6 +188,8 @@ export function FilterBar({ dateTabs, reviewers, docTypes, filters, onChange, qu
         options={API_CALLED_OPTIONS}
         width={170}
       />
+
+      <StartAfterRowInput value={filters.startAfterRow} onChange={(startAfterRow) => onChange({ ...filters, startAfterRow })} />
 
       <div
         style={{

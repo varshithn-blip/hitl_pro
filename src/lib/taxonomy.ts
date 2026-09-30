@@ -177,6 +177,43 @@ export function mergeTaxonomy(live: LiveTaxonomyRead): Taxonomy {
   }
 }
 
+// --- Session-scoped cache for the live taxonomy read -----------------------
+// Category, Fraud Reason, Reclassify, and Rejection-Reason-by-doc-type are
+// already read from the sheet only once per sign-in (the effect that calls
+// readLiveTaxonomy in usePortal.ts depends only on `user`, never re-fires on
+// a document/date-tab switch) — this doesn't change that, it only survives
+// a page REFRESH within the same browser tab, which throws the in-memory
+// state away and would otherwise force a full re-read. sessionStorage is a
+// deliberate fit, not just a convenient API: it's cleared when the tab
+// closes, which is exactly "per session" and nothing longer — no risk of a
+// reviewer opening the portal tomorrow and silently working off yesterday's
+// rejection-reason list.
+//
+// Company Category is NOT part of this cache and never will be — it's read
+// per-document, live, off that specific OCR tab's own cell (see
+// ocrParser.ts `attachFieldValidation`), a completely separate code path.
+const TAXONOMY_CACHE_KEY = 'hitl-taxonomy-cache-v1'
+
+export function loadCachedTaxonomy(): LiveTaxonomyRead | null {
+  try {
+    const raw = sessionStorage.getItem(TAXONOMY_CACHE_KEY)
+    return raw ? (JSON.parse(raw) as LiveTaxonomyRead) : null
+  } catch {
+    // Private-browsing storage block, corrupt JSON, quota — any of these
+    // just means "no cache", never a hard failure; the caller falls back
+    // to a live read same as a first-ever visit.
+    return null
+  }
+}
+
+export function saveCachedTaxonomy(live: LiveTaxonomyRead): void {
+  try {
+    sessionStorage.setItem(TAXONOMY_CACHE_KEY, JSON.stringify(live))
+  } catch {
+    // Storage full/blocked — fine to just skip caching this time.
+  }
+}
+
 // Category (Valid/Invalid/Incomplete) and Status (Approved/Rejected) used
 // to be coupled here via a derived mapping. Per explicit correction: they
 // are independent — a Valid document can still be Rejected for other

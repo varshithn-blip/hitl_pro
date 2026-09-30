@@ -17,8 +17,14 @@ export default function App() {
   const [rightTab, setRightTab] = useState<RightTab>('ocr')
 
   // Always land on the OCR tab first when opening a different document —
-  // reviewing fields comes before deciding, and it avoids carrying the
-  // previous document's tab choice over by accident.
+  // reviewing/correcting fields comes before deciding, and it avoids
+  // carrying the previous document's tab choice over by accident. (Was
+  // briefly changed to default to Decision instead, on the reasoning that
+  // most reviews end in a rejection — reverted per explicit direction:
+  // that didn't make sense as the starting point after all. Rejection
+  // Reason being moved to the top of the Decision panel, and
+  // auto-marking Invalid+Rejected when a reason is picked, are unrelated
+  // changes and stay as they are.)
   useEffect(() => {
     setRightTab('ocr')
   }, [p.selectedRowKey])
@@ -78,6 +84,12 @@ export default function App() {
                         onTableCellChange={p.editTableCell}
                         onAddTableRow={p.addTableRow}
                         onRemoveTableRow={p.removeTableRow}
+                        checkResult={p.ocrCheckResult}
+                        onConfirmOcr={p.confirmOcrFields}
+                        onNavigateToDecision={() => setRightTab('decision')}
+                        documentType={p.selectedRow.documentType}
+                        payslipCalculator={p.payslipCalculator}
+                        onPayslipCalculatorChange={p.setPayslipCalculatorExpr}
                       />
                     )
                   ) : (

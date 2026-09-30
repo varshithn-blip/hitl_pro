@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { avatarColor, docTypeBadge, reviewerInitials, statusDotColor } from '../lib/presentation'
 import { isPendingStatus, masterRowKey, type MasterRow } from '../lib/types'
 import { ChevronLeft, ChevronRight } from './icons'
@@ -142,124 +142,149 @@ export function QueueList({ rows, selectedRowKey, onSelect }: Props) {
 
         {rows.map((row) => {
           const rowKey = masterRowKey(row)
-          const selected = rowKey === selectedRowKey
-          const isDone = !isPendingStatus(row.status)
-          const badge = docTypeBadge(row.documentType)
-          const avatar = avatarColor(row.reviewer)
-          const statusLabel = row.status === 'Manually Approved' ? 'Approved' : row.status === 'Manually Rejected' ? 'Rejected' : 'Pending'
-          return (
-            <button
-              key={rowKey}
-              onClick={() => onSelect(rowKey)}
-              style={{
-                textAlign: 'left',
-                padding: 10,
-                borderRadius: 8,
-                background: selected ? 'var(--accent-tint)' : 'transparent',
-                border: selected ? '1px solid oklch(78% 0.09 255)' : '1px solid transparent',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
-                // Pending rows recede so completed ones (full color, a
-                // clear Approved/Rejected label below) stand out at a
-                // glance — the ask was "not clear what's done vs not".
-                opacity: isDone || selected ? 1 : 0.55,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11.5,
-                    fontWeight: selected ? 600 : 500,
-                    color: 'var(--text-primary)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: 170,
-                  }}
-                >
-                  {row.transactionId}
-                </span>
-                <span
-                  style={{
-                    fontSize: 9.5,
-                    fontWeight: 700,
-                    letterSpacing: '0.03em',
-                    textTransform: 'uppercase',
-                    color: isDone ? statusDotColor(row) : 'var(--text-muted)',
-                  }}
-                >
-                  {statusLabel}
-                </span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                  <span
-                    style={{
-                      fontSize: 10.5,
-                      fontWeight: 600,
-                      padding: '2px 7px',
-                      borderRadius: 5,
-                      background: isDone ? badge.bg : 'oklch(93% 0.006 255)',
-                      color: isDone ? badge.fg : 'var(--text-secondary)',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {badge.label}
-                  </span>
-                  {/* The exact tab name (payslip_0 vs payslip_1, ...), not
-                      just the friendly badge above. This is more than a
-                      nice-to-have: it's one third of this app's actual
-                      unique key for a row (see masterRowKey in types.ts —
-                      Transaction ID + Request ID + Document Type,
-                      together, not any one or two alone). Two cards can
-                      share a Transaction ID and still differ here
-                      (loan_0/loan_1), and two cards can share BOTH a
-                      Transaction ID and this exact tab name and still be
-                      genuinely different documents if their Request ID
-                      differs (found live — one transaction, two separate
-                      Request IDs, each with its own payslip_0). Only when
-                      all three match — Transaction ID, Request ID, AND
-                      this exact tab name — is it a genuine upstream
-                      duplicate (the one case masterRowKey can't
-                      disambiguate), not an app bug. */}
-                  <span
-                    title={`${row.documentType} — Request ID: ${row.requestId} (part of this card's real identity together with Transaction ID + Document Type, but not reliably unique by itself — see types.ts)`}
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 9.5,
-                      color: 'var(--text-muted)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {row.documentType}
-                  </span>
-                </div>
-                <div
-                  title={row.reviewer}
-                  style={{
-                    width: 17,
-                    height: 17,
-                    borderRadius: '50%',
-                    background: isDone ? avatar.bg : 'oklch(90% 0.006 255)',
-                    color: isDone ? avatar.fg : 'var(--text-secondary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 8.5,
-                    fontWeight: 600,
-                  }}
-                >
-                  {reviewerInitials(row.reviewer)}
-                </div>
-              </div>
-            </button>
-          )
+          return <QueueRow key={rowKey} row={row} rowKey={rowKey} selected={rowKey === selectedRowKey} onSelect={onSelect} />
         })}
       </div>
     </div>
   )
 }
+
+/** Split out and memoized so an unrelated re-render of the parent (the
+ * sync-status footer ticking, a filter changing, typing in search — none
+ * of which touch most individual rows) doesn't re-render every row in
+ * the queue. Only re-renders a given row when ITS OWN row data or
+ * selected-state actually changes. `onSelect` is stable across renders
+ * (it's `usePortal`'s `setSelectedRowKey`, a state setter), so it never
+ * defeats this on its own. `content-visibility: auto` on the button
+ * itself is a second, complementary cheap win — the browser can skip
+ * layout/paint work entirely for rows currently scrolled out of view,
+ * which matters more as a date tab's queue grows (a lightly-filtered
+ * queue on a big date tab can still mean hundreds of live rows). */
+const QueueRow = memo(function QueueRow({
+  row,
+  rowKey,
+  selected,
+  onSelect,
+}: {
+  row: MasterRow
+  rowKey: string
+  selected: boolean
+  onSelect: (rowKey: string) => void
+}) {
+  const isDone = !isPendingStatus(row.status)
+  const badge = docTypeBadge(row.documentType)
+  const avatar = avatarColor(row.reviewer)
+  const statusLabel = row.status === 'Manually Approved' ? 'Approved' : row.status === 'Manually Rejected' ? 'Rejected' : 'Pending'
+  return (
+    <button
+      onClick={() => onSelect(rowKey)}
+      style={{
+        textAlign: 'left',
+        padding: 10,
+        borderRadius: 8,
+        background: selected ? 'var(--accent-tint)' : 'transparent',
+        border: selected ? '1px solid oklch(78% 0.09 255)' : '1px solid transparent',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        // Pending rows recede so completed ones (full color, a
+        // clear Approved/Rejected label below) stand out at a
+        // glance — the ask was "not clear what's done vs not".
+        opacity: isDone || selected ? 1 : 0.55,
+        contentVisibility: 'auto',
+        containIntrinsicSize: '0 62px', // approx. rendered row height, so scrollbar/layout stays stable before an off-screen row's real size is known
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11.5,
+            fontWeight: selected ? 600 : 500,
+            color: 'var(--text-primary)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: 170,
+          }}
+        >
+          {row.transactionId}
+        </span>
+        <span
+          style={{
+            fontSize: 9.5,
+            fontWeight: 700,
+            letterSpacing: '0.03em',
+            textTransform: 'uppercase',
+            color: isDone ? statusDotColor(row) : 'var(--text-muted)',
+          }}
+        >
+          {statusLabel}
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 600,
+              padding: '2px 7px',
+              borderRadius: 5,
+              background: isDone ? badge.bg : 'oklch(93% 0.006 255)',
+              color: isDone ? badge.fg : 'var(--text-secondary)',
+              flexShrink: 0,
+            }}
+          >
+            {badge.label}
+          </span>
+          {/* The exact tab name (payslip_0 vs payslip_1, ...), not
+              just the friendly badge above. This is more than a
+              nice-to-have: it's one third of this app's actual
+              unique key for a row (see masterRowKey in types.ts —
+              Transaction ID + Request ID + Document Type,
+              together, not any one or two alone). Two cards can
+              share a Transaction ID and still differ here
+              (loan_0/loan_1), and two cards can share BOTH a
+              Transaction ID and this exact tab name and still be
+              genuinely different documents if their Request ID
+              differs (found live — one transaction, two separate
+              Request IDs, each with its own payslip_0). Only when
+              all three match — Transaction ID, Request ID, AND
+              this exact tab name — is it a genuine upstream
+              duplicate (the one case masterRowKey can't
+              disambiguate), not an app bug. */}
+          <span
+            title={`${row.documentType} — Request ID: ${row.requestId} (part of this card's real identity together with Transaction ID + Document Type, but not reliably unique by itself — see types.ts)`}
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 9.5,
+              color: 'var(--text-muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {row.documentType}
+          </span>
+        </div>
+        <div
+          title={row.reviewer}
+          style={{
+            width: 17,
+            height: 17,
+            borderRadius: '50%',
+            background: isDone ? avatar.bg : 'oklch(90% 0.006 255)',
+            color: isDone ? avatar.fg : 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 8.5,
+            fontWeight: 600,
+          }}
+        >
+          {reviewerInitials(row.reviewer)}
+        </div>
+      </div>
+    </button>
+  )
+})

@@ -14,6 +14,8 @@
 // works as long as the signed-in reviewer's account can see the file,
 // same as everything else in this app.
 
+import { withRetry } from './retry'
+
 const DRIVE_FILE_ID_PATTERNS = [/\/file\/d\/([a-zA-Z0-9_-]+)/, /\/d\/([a-zA-Z0-9_-]+)/, /[?&]id=([a-zA-Z0-9_-]+)/]
 
 export function extractDriveFileId(url: string | null): string | null {
@@ -48,21 +50,48 @@ export interface DriveFilePreview {
  * it (plus its content type, for picking how to render it). Caller owns
  * the URL's lifetime — call `URL.revokeObjectURL` on it once it's no
  * longer shown, or the blob stays pinned in memory for the life of the
- * tab. */
-export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string): Promise<DriveFilePreview> {
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+ * tab. Pass `signal` (an AbortController's) so switching to a different
+ * row before this resolves actually stops the download — a full-size
+ * scanned document can be several MB, and on a weak connection a
+ * reviewer clicking through the queue quickly can otherwise leave
+ * several of these downloading in the background at once, each one
+ * discarded on arrival. Retried (see lib/retry.ts) on a transient
+ * failure — a full re-download from scratch on retry (`fetch` can't
+ * resume a partial one), but still better than surfacing a hard error
+ * for one dropped packet on a flaky connection and making the reviewer
+ * retry by hand. */
+export async function fetchDriveFileObjectUrl(fileId: string, accessToken: string, signal?: AbortSignal): Promise<DriveFilePreview> {
+  return withRetry(async () => {
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal,
+    })
+    if (!res.ok) {
+      const status = res.status
+      const hint = status === 403 || status === 404 ? ' — the signed-in account may not have access to this file.' : ''
+      throw new DriveApiError(`Failed to load the document from Drive (${status})${hint}`, status)
+    }
+    const blob = await res.blob()
+    const mimeType = blob.type || res.headers.get('content-type') || 'application/octet-stream'
+    return { url: URL.createObjectURL(blob), mimeType }
   })
-  if (!res.ok) {
-    const status = res.status
-    const hint = status === 403 || status === 404 ? ' — the signed-in account may not have access to this file.' : ''
-    throw new DriveApiError(`Failed to load the document from Drive (${status})${hint}`, status)
-  }
-  const blob = await res.blob()
-  const mimeType = blob.type || res.headers.get('content-type') || 'application/octet-stream'
-  return { url: URL.createObjectURL(blob), mimeType }
 }
 
 export function isPdfMimeType(mimeType: string | null): boolean {
   return mimeType?.toLowerCase().includes('pdf') ?? false
+}
+
+/** Whether to skip speculative work (currently: prefetching the next
+ * queue item's image) because the connection looks too slow or metered
+ * to spend on something the reviewer might not even reach. Reads the
+ * browser's Network Information API (`navigator.connection`) where
+ * available — Data Saver mode, or an effective type of 2G or slower.
+ * Not every browser exposes this (notably Safari/Firefox as of writing);
+ * `false` (allow prefetching) is the correct default when it's simply
+ * unavailable, not a signal either way about the real connection. */
+export function isSlowConnection(): boolean {
+  const connection = (navigator as any).connection
+  if (!connection) return false
+  if (connection.saveData) return true
+  return connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g'
 }

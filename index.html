@@ -3,13 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
-      rel="stylesheet"
-    />
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <!-- Fonts are self-hosted (see main.tsx's @fontsource imports) — no
+         external stylesheet/font-host round trip needed anymore.
+         Google Identity Services is also no longer loaded here: it's
+         injected lazily on first Sign In click (see googleAuth.ts
+         loadGsiScript) so a returning reviewer with a still-valid stored
+         token never pays for it. -->
+    <link rel="preconnect" href="https://sheets.googleapis.com" />
+    <link rel="preconnect" href="https://www.googleapis.com" crossorigin />
     <title>Document Review Portal</title>
   </head>
   <body>
