@@ -5,6 +5,7 @@ import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAu
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
+import { computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR, PAYSLIP_DATE_FIELDS, PAYSLIP_SALARY_FIELDS, type PayslipCalculatorInputs } from '../lib/payslipCalc'
 import { checkOutdatedDocument, OUTDATED_DOCUMENT_REASON, type OutdatedCheckResult } from '../lib/ruleChecks'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
 import { baseDocType, loadCachedTaxonomy, mergeTaxonomy, saveCachedTaxonomy } from '../lib/taxonomy'
@@ -73,6 +74,16 @@ export function usePortal() {
    * corrected values, never a possibly-misread raw OCR date, so this
    * only ever updates from an explicit click. */
   const [ocrCheckResult, setOcrCheckResult] = useState<OutdatedCheckResult | null>(null)
+  /** Portal-only inputs for the Payslip "Salary Calculator" (Taxable/
+   * Non-Taxable Income, Deduction, plus a convenience sum for SSS/
+   * PhilHealth Premium) — see payslipCalc.ts. Deliberately kept
+   * completely separate from `draftSections`/OcrSection, never merged
+   * into it: that's what makes "these three fields never touch the
+   * real OCR sheet" a structural guarantee rather than a runtime flag
+   * that could have an edge-case bug — buildFieldEdits only ever reads
+   * draftSections vs currentDoc.sections, and this state doesn't exist
+   * in either, so there is no code path that could write it back. */
+  const [payslipCalculator, setPayslipCalculator] = useState<PayslipCalculatorInputs>(EMPTY_PAYSLIP_CALCULATOR)
 
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const [imagePreviewType, setImagePreviewType] = useState<string | null>(null)
@@ -272,6 +283,7 @@ export function usePortal() {
     setCurrentDoc(null)
     setDraftSections(null)
     setOcrCheckResult(null)
+    setPayslipCalculator(EMPTY_PAYSLIP_CALCULATOR)
 
     if (!selectedRow) {
       setDecisionDraft(EMPTY_DRAFT)
@@ -606,6 +618,70 @@ export function usePortal() {
     }
   }, [selectedRow, draftSections])
 
+  const setPayslipCalculatorExpr = useCallback((field: keyof PayslipCalculatorInputs, value: string) => {
+    setPayslipCalculator((prev) => ({ ...prev, [field]: value }))
+  }, [])
+
+  /** Writes a computed value into a REAL OCR field by label, in-place
+   * within draftSections — but only if that field actually exists and
+   * the value genuinely differs from what's there, so this can be
+   * called on every render-triggering change below without ever
+   * causing an extra one: setDraftSections bails out on an identical
+   * array reference when nothing changed. `computed === null` ("nothing
+   * to sync yet" — see computePayslipAutoFields) is a no-op, never a
+   * blank-out; a field this hasn't computed anything for yet is left
+   * exactly as OCR (or the reviewer) left it. */
+  const syncComputedField = useCallback((label: string, computed: string | null) => {
+    if (computed === null) return
+    setDraftSections((prev) => {
+      if (!prev) return prev
+      for (let sIdx = 0; sIdx < prev.length; sIdx++) {
+        const section = prev[sIdx]
+        if (section.kind !== 'fields') continue
+        const fIdx = section.fields.findIndex((f) => f.label === label)
+        if (fIdx === -1) continue
+        if (section.fields[fIdx].value === computed) return prev
+        const next = structuredClone(prev)
+        const nextSection = next[sIdx]
+        if (nextSection.kind === 'fields') nextSection.fields[fIdx].value = computed
+        return next
+      }
+      return prev
+    })
+  }, [])
+
+  // --- Payslip auto-calculated fields -----------------------------------
+  // Per explicit direction: Duration is derived from Salary Period
+  // Start/End Date; Gross Salary/Net Salary/SSS Premium/PhilHealth
+  // Premium are derived from the portal-only calculator above. Re-
+  // derives from CURRENT state on every relevant change — however it
+  // happened (typing in a date field, typing in the calculator, the
+  // initial OCR load) — rather than hooking into individual handlers,
+  // so it can never fall out of sync with what's actually on screen.
+  // Every field stays independently editable by hand regardless: typing
+  // directly into e.g. Duration sticks until its OWN source (the two
+  // date fields) changes again, at which point it's recomputed.
+  useEffect(() => {
+    if (!selectedRow || !draftSections) return
+    if (baseDocType(selectedRow.documentType) !== 'payslip') return
+
+    const findValue = (label: string): string | null => {
+      for (const section of draftSections) {
+        if (section.kind !== 'fields') continue
+        const field = section.fields.find((f) => f.label === label)
+        if (field) return field.value
+      }
+      return null
+    }
+
+    const auto = computePayslipAutoFields(findValue(PAYSLIP_DATE_FIELDS.start), findValue(PAYSLIP_DATE_FIELDS.end), payslipCalculator)
+    syncComputedField(PAYSLIP_DATE_FIELDS.duration, auto.duration)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.grossSalary, auto.grossSalary)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.netSalary, auto.netSalary)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.sssPremium, auto.sssPremium)
+    syncComputedField(PAYSLIP_SALARY_FIELDS.philHealthPremium, auto.philHealthPremium)
+  }, [selectedRow, draftSections, payslipCalculator, syncComputedField])
+
   // --- Submit -------------------------------------------------------------
   const submit = useCallback(async () => {
     // Category and Status are independent — see DecisionDraft's comments —
@@ -715,6 +791,8 @@ export function usePortal() {
     removeTableRow,
     ocrCheckResult,
     confirmOcrFields,
+    payslipCalculator,
+    setPayslipCalculatorExpr,
 
     submit,
     syncState,

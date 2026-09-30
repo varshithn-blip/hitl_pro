@@ -6,10 +6,12 @@
 // blank-valued field both come back as one-cell rows) is exactly the kind
 // of thing worth re-checking by hand against real sheet data once it's
 // available. Run with `npm run verify:parser`.
+import { evaluateExpression, formatComputed } from '../src/lib/calculator'
 import { extractDriveFileId } from '../src/lib/driveApi'
 import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseMasterRow, parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
+import { computeDurationDays, computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR } from '../src/lib/payslipCalc'
 import { checkOutdatedDocument, daysSince, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy } from '../src/lib/ruleChecks'
 import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
@@ -324,6 +326,89 @@ console.log('\n=== ruleChecks (parseDdMmYyyy / checkOutdatedDocument) ===')
 
   if (fail > 0) {
     console.log(`\n${fail} ruleChecks case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// Sanity check for lib/calculator.ts's safe arithmetic evaluator — the
+// "type a sum, see the total" convenience behind the payslip calculator
+// fields (Taxable/Non-Taxable Income, Deduction, SSS/PhilHealth Premium).
+console.log('\n=== calculator (evaluateExpression / formatComputed) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  ok(evaluateExpression('100+100') === 200, 'evaluates "100+100" -> 200 (the exact example from the spec)')
+  ok(evaluateExpression('250000 - 12500') === 237500, 'evaluates a subtraction with spaces')
+  ok(evaluateExpression('(80+20)*2') === 200, 'respects parentheses and operator precedence')
+  ok(evaluateExpression('10/4') === 2.5, 'evaluates division')
+  ok(evaluateExpression('-5+10') === 5, 'handles a leading unary minus')
+  ok(evaluateExpression('  50 + 50  ') === 100, 'tolerates surrounding/internal whitespace')
+  ok(evaluateExpression('') === null, 'blank expression -> null, not zero')
+  ok(evaluateExpression('abc') === null, 'nonsense input -> null, not a crash')
+  ok(evaluateExpression('10+') === null, 'incomplete expression -> null')
+  ok(evaluateExpression('10/0') === null, 'division by zero -> null, not Infinity')
+  ok(evaluateExpression('10 20') === null, 'trailing garbage after a valid number is rejected, not silently truncated')
+
+  ok(formatComputed(200) === '200', 'formats a whole number without a trailing ".00"')
+  ok(formatComputed(150.5) === '150.5', 'formats a simple decimal as-is')
+  ok(formatComputed(41540.664999) === '41540.66', 'rounds to the nearest cent')
+
+  if (fail > 0) {
+    console.log(`\n${fail} calculator case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// Sanity check for lib/payslipCalc.ts — Duration from the two Salary
+// Period dates, and Gross/Net Salary from the portal-only calculator,
+// including the activation rules that keep an untouched calculator from
+// ever overwriting a real OCR-extracted Gross/Net with a guessed zero.
+console.log('\n=== payslipCalc (computeDurationDays / computePayslipAutoFields) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  // Both cases below are taken straight from the real payslip_0/payslip_1
+  // fixtures (mockData.ts), which is exactly how Duration's "+1, not a
+  // plain difference" formula was originally confirmed.
+  ok(computeDurationDays('01/08/2026', '15/08/2026') === 15, 'Duration for 01/08-15/08 is 15 (inclusive), matching the real payslip_0 fixture')
+  ok(computeDurationDays('16/08/2026', '31/08/2026') === 16, 'Duration for 16/08-31/08 is 16, matching the real payslip_1 fixture')
+  ok(computeDurationDays('15/08/2026', '01/08/2026') === null, 'an end date before the start date is never guessed at, just null')
+  ok(computeDurationDays('not a date', '15/08/2026') === null, 'an unparseable date on either side is null, not a crash')
+
+  const r1 = computePayslipAutoFields('01/08/2026', '15/08/2026', EMPTY_PAYSLIP_CALCULATOR)
+  ok(r1.duration === '15', `dates alone compute Duration - got ${JSON.stringify(r1)}`)
+  ok(r1.grossSalary === null && r1.netSalary === null, 'an untouched calculator never computes Gross/Net (no guessed zero)')
+  ok(r1.sssPremium === null && r1.philHealthPremium === null, 'an untouched calculator never computes SSS/PhilHealth Premium either')
+
+  const r2 = computePayslipAutoFields('01/08/2026', '15/08/2026', { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '30000' })
+  ok(r2.grossSalary === '30000', `Taxable Income alone drives Gross Salary (Non-Taxable treated as 0) - got ${JSON.stringify(r2)}`)
+  ok(r2.netSalary === '30000', 'Net Salary follows Gross once Gross is active (Deduction treated as 0)')
+
+  const r3 = computePayslipAutoFields(null, null, {
+    ...EMPTY_PAYSLIP_CALCULATOR,
+    taxableIncomeExpr: '30000',
+    nonTaxableIncomeExpr: '5000+1000',
+    deductionExpr: '2500',
+  })
+  ok(r3.grossSalary === '36000', `Gross = Taxable + Non-Taxable (30000 + 6000) - got ${JSON.stringify(r3)}`)
+  ok(r3.netSalary === '33500', 'Net = Gross - Deduction (36000 - 2500)')
+
+  const r4 = computePayslipAutoFields(null, null, { ...EMPTY_PAYSLIP_CALCULATOR, deductionExpr: '2500' })
+  ok(r4.grossSalary === null && r4.netSalary === null, 'Deduction alone (no Taxable/Non-Taxable touched) computes neither Gross nor Net - nothing to subtract it from')
+
+  const r5 = computePayslipAutoFields(null, null, { ...EMPTY_PAYSLIP_CALCULATOR, sssExpr: '400+100', philHealthExpr: '250' })
+  ok(r5.sssPremium === '500' && r5.philHealthPremium === '250', `SSS/PhilHealth Premium compute independently of Gross/Net - got ${JSON.stringify(r5)}`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} payslipCalc case(s) failed.`)
     process.exitCode = 1
   }
 }

@@ -225,6 +225,52 @@ real and clickable — only the data source is fake.
   happened to be genuinely more than 60 days old as of this build, so
   the "outdated" path was exercised against a real date comparison, not
   only a synthetic one.
+- **Payslip auto-calculated fields** (`lib/payslipCalc.ts`,
+  `lib/calculator.ts`) — Payslip-only, per explicit direction:
+  - **Duration** recomputes automatically from Salary Period Start/End
+    Date (inclusive day count — confirmed against the real fixtures:
+    01/08–15/08 reads back as Duration "15") every time either date
+    changes, however that happened (typing directly, or via the OCR
+    load itself). Still a normal editable field — typing over it
+    sticks until one of the two dates changes again.
+  - **Gross Salary = Taxable Income + Non-Taxable Income; Net Salary =
+    Gross Salary − Deduction.** Taxable Income, Non-Taxable Income, and
+    Deduction are **brand new fields that exist only in this portal** —
+    per explicit direction, they're never written to the real OCR
+    sheet. That's a structural guarantee, not a runtime check: they
+    live in their own `payslipCalculator` state in `usePortal.ts`,
+    completely separate from `draftSections`/`OcrSection` — the one
+    data structure `buildFieldEdits` ever diffs to build a Sheets write,
+    so there is no code path that could leak them into it even by
+    accident.
+  - **A "calculator" convenience on five fields** — Taxable Income,
+    Non-Taxable Income, Deduction (the three new ones above), plus the
+    two real fields **SSS Premium** and **PhilHealth Premium** — per
+    explicit direction, each is two inputs: a raw sum the reviewer
+    types (e.g. `100+100`), and the evaluated total next to it (`200`),
+    via a small hand-written expression evaluator
+    (`lib/calculator.ts` → `evaluateExpression` — deliberately not
+    `eval`/`Function`, just +, −, ×, ÷ and parentheses). For SSS/
+    PhilHealth Premium the computed total syncs into that real field
+    (the expression box itself stays portal-only, same as the three new
+    fields). An untouched calculator field never overwrites a real,
+    OCR-extracted value with a guessed zero — Gross Salary only starts
+    computing once the reviewer has used Taxable or Non-Taxable Income
+    at least once, and Net Salary only once Gross is computing too
+    (Deduction alone, with neither income field touched, has nothing to
+    subtract from and is left alone).
+  - Every auto-calculated real field (Duration, Gross Salary, Net
+    Salary, SSS Premium, PhilHealth Premium) carries a small "⟳ AUTO"
+    badge next to its label, so it's visually clear why it might change
+    on its own — same visual language as the existing "▾ SHEET"/
+    "FALLBACK LIST" source badges elsewhere in this panel.
+  - Covered by regression cases in `verify:parser` (the expression
+    evaluator's arithmetic/edge cases, Duration's exact fixture-matched
+    day count, and the Gross/Net activation rules) and confirmed
+    end-to-end via Playwright against demo mode: editing Salary Period
+    End Date live-recomputes Duration, and filling in the calculator
+    fields correctly drives Gross Salary/Net Salary while leaving an
+    untouched PhilHealth Premium exactly as OCR left it.
 - **Decision panel** — OCR details is still the tab that opens by
   default when a document is selected (correcting fields comes before
   deciding); a brief change to default to Decision instead — reasoning

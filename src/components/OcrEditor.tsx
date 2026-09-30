@@ -1,4 +1,7 @@
+import { evaluateExpression, formatComputed } from '../lib/calculator'
+import { PAYSLIP_AUTO_FIELD_LABELS, type PayslipCalculatorInputs } from '../lib/payslipCalc'
 import type { OutdatedCheckResult } from '../lib/ruleChecks'
+import { baseDocType } from '../lib/taxonomy'
 import type { OcrSection } from '../lib/types'
 import { AlertTriangle, Check, Plus, X } from './icons'
 
@@ -17,6 +20,13 @@ interface Props {
    * about. */
   checkResult: OutdatedCheckResult | null
   onConfirmOcr: () => void
+  /** The exact tab name ("payslip_0", ...) — used only to decide
+   * whether to show the Payslip-only Salary Calculator block below;
+   * everything else in this file works off the parsed `sections`
+   * regardless of document type. */
+  documentType: string
+  payslipCalculator: PayslipCalculatorInputs
+  onPayslipCalculatorChange: (field: keyof PayslipCalculatorInputs, value: string) => void
 }
 
 const fieldBoxStyle: React.CSSProperties = {
@@ -27,7 +37,19 @@ const fieldBoxStyle: React.CSSProperties = {
   width: '100%',
 }
 
-export function OcrEditor({ sections, onFieldChange, onTableCellChange, onAddTableRow, onRemoveTableRow, checkResult, onConfirmOcr }: Props) {
+export function OcrEditor({
+  sections,
+  onFieldChange,
+  onTableCellChange,
+  onAddTableRow,
+  onRemoveTableRow,
+  checkResult,
+  onConfirmOcr,
+  documentType,
+  payslipCalculator,
+  onPayslipCalculatorChange,
+}: Props) {
+  const isPayslip = baseDocType(documentType) === 'payslip'
   return (
     <div className="rd-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 18 }}>
       {sections.map((section, sIdx) =>
@@ -43,6 +65,8 @@ export function OcrEditor({ sections, onFieldChange, onTableCellChange, onAddTab
           />
         ),
       )}
+
+      {isPayslip && <PayslipCalculatorSection calculator={payslipCalculator} onChange={onPayslipCalculatorChange} />}
 
       {/* Deliberately separate from the Decision panel's own "Submit &
           Next" — this never saves anything to Sheets, it only runs the
@@ -157,6 +181,7 @@ function FieldsSection({
           // looked at and found fine (that's the neutral/ok line at the
           // bottom of the whole panel instead, not a per-field banner).
           const flagged = checkResult?.status === 'outdated' && checkResult.fieldLabel === field.label ? checkResult : null
+          const isAutoCalculated = PAYSLIP_AUTO_FIELD_LABELS.includes(field.label)
           return (
             <div key={fIdx} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -173,6 +198,14 @@ function FieldsSection({
                       style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--accent)', cursor: 'help' }}
                     >
                       ▾ SHEET
+                    </span>
+                  )}
+                  {isAutoCalculated && (
+                    <span
+                      title="Kept in sync automatically — Duration from Salary Period Start/End Date above, Gross/Net/SSS/PhilHealth from the Salary Calculator below. Still a normal editable field: typing over it sticks until its own source changes again."
+                      style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--success)', cursor: 'help' }}
+                    >
+                      ⟳ AUTO
                     </span>
                   )}
                 </div>
@@ -292,6 +325,75 @@ function TableSection({
         {section.rows.some((r) => r.rowIndex <= 0) && (
           <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>New rows save with the rest of your changes on Submit.</span>
         )}
+      </div>
+    </div>
+  )
+}
+
+const CALCULATOR_ROWS: { key: keyof PayslipCalculatorInputs; label: string; hint?: string }[] = [
+  { key: 'taxableIncomeExpr', label: 'Taxable Income' },
+  { key: 'nonTaxableIncomeExpr', label: 'Non-Taxable Income' },
+  { key: 'deductionExpr', label: 'Deduction' },
+  { key: 'sssExpr', label: 'SSS Premium', hint: 'syncs into SSS Premium above' },
+  { key: 'philHealthExpr', label: 'PhilHealth Premium', hint: 'syncs into PhilHealth Premium above' },
+]
+
+/** Payslip-only, per explicit direction — Taxable Income, Non-Taxable
+ * Income, and Deduction are brand new fields that exist ONLY here, never
+ * in the real OCR sheet (see usePortal.ts's `payslipCalculator` comment
+ * for why that's a structural guarantee). SSS Premium and PhilHealth
+ * Premium are real fields (rendered normally above, in Salary Details)
+ * that also get this same "type a sum, see the total" convenience —
+ * their computed value syncs into the real field, this expression input
+ * itself doesn't.
+ *
+ * Each row is two inputs, per explicit direction: the reviewer types a
+ * plain sum like "100+100" on the left, the evaluated total shows on
+ * the right — see lib/calculator.ts `evaluateExpression`. Gross Salary
+ * (Taxable + Non-Taxable) and Net Salary (Gross − Deduction) above
+ * recompute automatically once their inputs here are used; see
+ * lib/payslipCalc.ts `computePayslipAutoFields` for the exact
+ * activation rules (an untouched calculator never overwrites a real,
+ * OCR-extracted Gross/Net with a guessed zero). */
+function PayslipCalculatorSection({ calculator, onChange }: { calculator: PayslipCalculatorInputs; onChange: (field: keyof PayslipCalculatorInputs, value: string) => void }) {
+  return (
+    <div>
+      <SectionTitle>Salary Calculator</SectionTitle>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: -4, marginBottom: 10 }}>
+        Portal only — never written to the OCR sheet. Type a sum (e.g. "100+100") and the total fills in on the right;
+        Gross Salary and Net Salary above pick it up automatically once you use Taxable/Non-Taxable Income or Deduction.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {CALCULATOR_ROWS.map((row) => {
+          const computed = evaluateExpression(calculator[row.key])
+          return (
+            <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', width: 124, flexShrink: 0 }}>
+                <span style={{ fontSize: 10.5, color: 'var(--text-secondary)' }}>{row.label}</span>
+                {row.hint && <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>{row.hint}</span>}
+              </div>
+              <input
+                value={calculator[row.key]}
+                onChange={(e) => onChange(row.key, e.target.value)}
+                placeholder="e.g. 100+100"
+                style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0 }}
+              />
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>=</span>
+              <div
+                style={{
+                  ...fieldBoxStyle,
+                  padding: '7px 9px',
+                  flex: 1,
+                  minWidth: 0,
+                  background: 'var(--bg-subtle)',
+                  color: computed !== null ? 'var(--text-primary)' : 'var(--text-muted)',
+                }}
+              >
+                {computed !== null ? formatComputed(computed) : '—'}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
