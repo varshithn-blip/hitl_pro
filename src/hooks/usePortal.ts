@@ -6,12 +6,14 @@ import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
 import {
+  checkDurationReasonable,
   checkNetPayConsistency,
   computePayslipAutoFields,
   EMPTY_PAYSLIP_CALCULATOR,
   PAYSLIP_DATE_FIELDS,
   PAYSLIP_SALARY_FIELDS,
   TOTAL_INCONSISTENT_FRAUD_REASON,
+  type DurationCheckResult,
   type NetPayConsistencyResult,
   type PayslipCalculatorInputs,
 } from '../lib/payslipCalc'
@@ -45,6 +47,7 @@ function seedDraft(row: MasterRow): DecisionDraft {
 export interface ConfirmOcrResult {
   outdated: OutdatedCheckResult
   netPay: NetPayConsistencyResult
+  duration: DurationCheckResult
 }
 
 type SyncState = 'idle' | 'saving' | 'saved' | 'error'
@@ -97,6 +100,12 @@ export function usePortal() {
    * see the edit handlers below), but tracked separately since the two
    * checks are independent and both can be non-null at once. */
   const [netPayCheckResult, setNetPayCheckResult] = useState<NetPayConsistencyResult | null>(null)
+  /** Result of the last "Submit OCR corrections" click's Duration sanity
+   * check (Payslip only) — same lifecycle as `ocrCheckResult`/
+   * `netPayCheckResult` above. Purely informational: unlike the other two
+   * checks, this never touches `decisionDraft` at all — see
+   * `checkDurationReasonable`'s own comments. */
+  const [durationCheckResult, setDurationCheckResult] = useState<DurationCheckResult | null>(null)
   /** The calculator's own reference Net Pay figure — kept LIVE (recomputed
    * on every relevant change, not just on Submit) so OcrEditor can show it
    * next to the real "Net Salary" field for the reviewer to compare by eye
@@ -313,6 +322,7 @@ export function usePortal() {
     setDraftSections(null)
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
+    setDurationCheckResult(null)
     setPayslipCalculatedNetPay(null)
     setPayslipCalculator(EMPTY_PAYSLIP_CALCULATOR)
 
@@ -562,12 +572,12 @@ export function usePortal() {
   }, [])
 
   // --- OCR field/table edit handlers ------------------------------------
-  // Every one of these also clears ocrCheckResult AND netPayCheckResult:
-  // any edit means the last "Submit OCR corrections" results (see
-  // confirmOcrFields below) no longer reflect what's actually in the
-  // draft, so the inline warnings (and the button's status lines)
-  // disappear until the reviewer clicks it again — never leaving a stale
-  // check displayed against values that have since changed.
+  // Every one of these also clears all three "Submit OCR corrections"
+  // results (ocrCheckResult, netPayCheckResult, durationCheckResult): any
+  // edit means they no longer reflect what's actually in the draft, so
+  // the inline warnings (and the button's status lines) disappear until
+  // the reviewer clicks it again — never leaving a stale check displayed
+  // against values that have since changed.
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {
     setDraftSections((prev) => {
       if (!prev) return prev
@@ -578,6 +588,7 @@ export function usePortal() {
     })
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
+    setDurationCheckResult(null)
   }, [])
 
   const editTableCell = useCallback((sectionIndex: number, rowIndex: number, colIndex: number, value: string) => {
@@ -593,6 +604,7 @@ export function usePortal() {
     })
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
+    setDurationCheckResult(null)
   }, [])
 
   const addTableRow = useCallback((sectionIndex: number) => {
@@ -608,6 +620,7 @@ export function usePortal() {
     })
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
+    setDurationCheckResult(null)
   }, [])
 
   const removeTableRow = useCallback((sectionIndex: number, rowIndex: number) => {
@@ -620,6 +633,7 @@ export function usePortal() {
     })
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
+    setDurationCheckResult(null)
   }, [])
 
   // --- "Submit OCR corrections" (the button at the end of the OCR editor) ---
@@ -683,7 +697,14 @@ export function usePortal() {
       )
     }
 
-    return { outdated: result, netPay: netPayResult }
+    // Duration sanity check (Payslip only) — purely informational, per
+    // explicit direction: this never touches decisionDraft at all, just
+    // tells the reviewer so they can decide for themselves whether to
+    // correct the OCR dates or flag "Date Inconsistent" in Fraud Reason.
+    const durationResult = checkDurationReasonable(docType, draftSections)
+    setDurationCheckResult(durationResult)
+
+    return { outdated: result, netPay: netPayResult, duration: durationResult }
   }, [selectedRow, draftSections, payslipCalculator])
 
   const setPayslipCalculatorExpr = useCallback((field: keyof PayslipCalculatorInputs, value: string) => {
@@ -859,6 +880,7 @@ export function usePortal() {
     removeTableRow,
     ocrCheckResult,
     netPayCheckResult,
+    durationCheckResult,
     payslipCalculatedNetPay,
     confirmOcrFields,
     payslipCalculator,

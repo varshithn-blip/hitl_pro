@@ -208,3 +208,32 @@ export function checkNetPayConsistency(baseDocType: string, sections: OcrSection
     ? { status: 'mismatch', declared, calculated }
     : { status: 'match', declared, calculated }
 }
+
+/** A salary period longer than a calendar month is almost always a sign
+ * the underlying dates are wrong, not a real pay period — per explicit
+ * direction, this is purely informational: it takes no action at all
+ * (no Fraud Reason, no rejection), just tells the reviewer so they can
+ * decide for themselves whether to correct the OCR dates or flag
+ * "Date Inconsistent" in Fraud Reason. */
+export const DURATION_WARNING_THRESHOLD_DAYS = 31
+
+export type DurationCheckResult =
+  | { status: 'not-applicable' }
+  | { status: 'unavailable' }
+  | { status: 'ok'; duration: number }
+  | { status: 'too-long'; duration: number }
+
+/** Checks whatever is CURRENTLY in the Duration field — however it got
+ * there, auto-computed from the two date fields or typed directly by
+ * the reviewer — against `DURATION_WARNING_THRESHOLD_DAYS`. `unavailable`
+ * covers a blank or non-numeric value (nothing to warn about yet, not a
+ * false "too long"). */
+export function checkDurationReasonable(baseDocType: string, sections: OcrSection[]): DurationCheckResult {
+  if (baseDocType !== 'payslip') return { status: 'not-applicable' }
+
+  const field = findField(sections, PAYSLIP_DATE_FIELDS.duration)
+  const duration = field ? parseDeclaredAmount(field.value) : null
+  if (duration === null) return { status: 'unavailable' }
+
+  return duration > DURATION_WARNING_THRESHOLD_DAYS ? { status: 'too-long', duration } : { status: 'ok', duration }
+}

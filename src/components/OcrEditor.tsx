@@ -1,6 +1,13 @@
 import { useRef } from 'react'
 import { evaluateExpression, formatComputed } from '../lib/calculator'
-import { PAYSLIP_AUTO_FIELD_LABELS, PAYSLIP_SALARY_FIELDS, type NetPayConsistencyResult, type PayslipCalculatorInputs } from '../lib/payslipCalc'
+import {
+  PAYSLIP_AUTO_FIELD_LABELS,
+  PAYSLIP_DATE_FIELDS,
+  PAYSLIP_SALARY_FIELDS,
+  type DurationCheckResult,
+  type NetPayConsistencyResult,
+  type PayslipCalculatorInputs,
+} from '../lib/payslipCalc'
 import type { OutdatedCheckResult } from '../lib/ruleChecks'
 import { baseDocType } from '../lib/taxonomy'
 import type { OcrSection } from '../lib/types'
@@ -33,10 +40,17 @@ interface Props {
    * keystroke, not just on Submit, so the reviewer can compare it
    * against the declared field at any time before ever clicking Submit. */
   calculatedNetPay: string | null
-  /** Runs both checks and returns their results synchronously — see this
-   * component's own submit handler below, which uses the return value
-   * (not a separate effect on the stored results) to decide whether to
-   * scroll to a flagged field or hand off to `onNavigateToDecision`. */
+  /** Result of the last Submit click's Duration sanity check (Payslip
+   * only) — same lifecycle as `checkResult`/`netPayCheckResult`, but
+   * purely informational: it never marks anything, it's just shown next
+   * to the Duration field for the reviewer to notice and decide for
+   * themselves (see usePortal.ts's `checkDurationReasonable`). */
+  durationCheckResult: DurationCheckResult | null
+  /** Runs all three checks and returns their results synchronously — see
+   * this component's own submit handler below, which uses the return
+   * value (not a separate effect on the stored results) to decide
+   * whether to scroll to a flagged field or hand off to
+   * `onNavigateToDecision`. */
   onConfirmOcr: () => ConfirmOcrResult | null
   /** Switches the right-hand panel to the Decision tab — lives in
    * App.tsx (that's where `rightTab` state is), passed down so a clean
@@ -69,6 +83,7 @@ export function OcrEditor({
   checkResult,
   netPayCheckResult,
   calculatedNetPay,
+  durationCheckResult,
   onConfirmOcr,
   onNavigateToDecision,
   documentType,
@@ -95,11 +110,15 @@ export function OcrEditor({
   // themselves. A Net Pay mismatch gets the same treatment — scrolled to
   // the real Net Salary field, since it's a fraud signal getting quietly
   // added to a Decision-tab popover the reviewer might otherwise never
-  // notice. The outdated-document check takes priority when both fire at
-  // once (a more foundational problem — the document itself may not even
-  // be current). Anything else — both checks clean, or a document type
-  // neither applies to — has nothing left for the reviewer to look at on
-  // this tab, so it advances them straight to Decision.
+  // notice. A too-long Duration gets it too, purely so the reviewer
+  // actually sees the heads-up (it takes no action of its own — see
+  // checkDurationReasonable). Priority when more than one fires on the
+  // same click: outdated-document first (a more foundational problem —
+  // the document itself may not even be current), then Net Pay mismatch
+  // (an auto-added Fraud Reason, so it must not go unnoticed), then
+  // Duration (informational only). Anything else — every check clean, or
+  // a document type none of them apply to — has nothing left for the
+  // reviewer to look at here, so it advances them straight to Decision.
   const handleConfirmOcr = () => {
     const result = onConfirmOcr()
     if (!result) return
@@ -107,6 +126,8 @@ export function OcrEditor({
       fieldRefs.current.get(result.outdated.fieldLabel)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     } else if (result.netPay.status === 'mismatch') {
       fieldRefs.current.get(PAYSLIP_SALARY_FIELDS.netSalary)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    } else if (result.duration.status === 'too-long') {
+      fieldRefs.current.get(PAYSLIP_DATE_FIELDS.duration)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     } else {
       onNavigateToDecision()
     }
@@ -123,6 +144,7 @@ export function OcrEditor({
             checkResult={checkResult}
             netPayCheckResult={netPayCheckResult}
             calculatedNetPay={calculatedNetPay}
+            durationCheckResult={durationCheckResult}
             registerFieldRef={registerFieldRef}
           />
         ) : (
@@ -173,6 +195,7 @@ export function OcrEditor({
         </span>
         <CheckResultStatus result={checkResult} />
         <NetPayCheckStatus result={netPayCheckResult} />
+        <DurationCheckStatus result={durationCheckResult} />
       </div>
     </div>
   )
@@ -237,6 +260,31 @@ function NetPayCheckStatus({ result }: { result: NetPayConsistencyResult | null 
   )
 }
 
+/** The Duration check's own feedback line. Deliberately never uses the
+ * danger/red styling the other two checks use for their "something's
+ * wrong" state — per explicit direction this one takes no action at all,
+ * so it stays at warning/amber severity throughout, matching the inline
+ * banner below. Silent for 'not-applicable' and 'unavailable' (blank/
+ * non-numeric Duration — nothing to warn about yet), same as the other
+ * two status lines. */
+function DurationCheckStatus({ result }: { result: DurationCheckResult | null }) {
+  if (!result || result.status === 'not-applicable' || result.status === 'unavailable') return null
+  if (result.status === 'ok') {
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, color: 'var(--success)' }}>
+        <Check size={11} />
+        Duration ({result.duration} days) looks reasonable.
+      </span>
+    )
+  }
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--warning)' }}>
+      <AlertTriangle size={11} />
+      Duration is {result.duration} days — over 31, scrolled up to it above.
+    </span>
+  )
+}
+
 function SectionTitle({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div
@@ -261,6 +309,7 @@ function FieldsSection({
   checkResult,
   netPayCheckResult,
   calculatedNetPay,
+  durationCheckResult,
   registerFieldRef,
 }: {
   section: Extract<OcrSection, { kind: 'fields' }>
@@ -268,6 +317,7 @@ function FieldsSection({
   checkResult: OutdatedCheckResult | null
   netPayCheckResult: NetPayConsistencyResult | null
   calculatedNetPay: string | null
+  durationCheckResult: DurationCheckResult | null
   /** Registers this field row's wrapper div so OcrEditor's submit handler
    * can scroll straight to it the instant a check flags it — see
    * OcrEditor's `fieldRefs`. Called for every field, flagged or not, so
@@ -297,6 +347,11 @@ function FieldsSection({
           // exist there.
           const isNetSalaryField = field.label === PAYSLIP_SALARY_FIELDS.netSalary
           const netPayMismatch = isNetSalaryField && netPayCheckResult?.status === 'mismatch'
+          // Duration is the one field checkDurationReasonable ever looks
+          // at — same "only exists on Payslip's schema" reasoning as
+          // isNetSalaryField above.
+          const isDurationField = field.label === PAYSLIP_DATE_FIELDS.duration
+          const durationTooLong = isDurationField && durationCheckResult?.status === 'too-long' ? durationCheckResult : null
           return (
             <div key={fIdx} ref={(el) => registerFieldRef(field.label, el)} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -345,7 +400,13 @@ function FieldsSection({
                     padding: '7px 9px',
                     flex: 1,
                     minWidth: 0,
-                    ...(flagged ? { borderColor: outdated ? 'var(--danger)' : 'var(--warning)' } : netPayMismatch ? { borderColor: 'var(--danger)' } : undefined),
+                    ...(flagged
+                      ? { borderColor: outdated ? 'var(--danger)' : 'var(--warning)' }
+                      : netPayMismatch
+                        ? { borderColor: 'var(--danger)' }
+                        : durationTooLong
+                          ? { borderColor: 'var(--warning)' }
+                          : undefined),
                   }}
                 />
                 {hasSuggestions && (
@@ -433,6 +494,32 @@ function FieldsSection({
                   {netPayMismatch
                     ? `Calculated: ${calculatedNetPay} — doesn't match the declared value above. Flagged "Total Inconsistent" in Fraud Reason.`
                     : `Calculated (reference only, from the Salary Calculator below): ${calculatedNetPay}`}
+                </div>
+              )}
+              {/* Purely informational, per explicit direction: this
+                  never marks anything (no Fraud Reason, no rejection) —
+                  it just tells the reviewer a salary period over a
+                  month long usually means the dates are wrong, and
+                  leaves the call (correct the OCR dates, or flag "Date
+                  Inconsistent" in Fraud Reason) entirely up to them. */}
+              {durationTooLong && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 6,
+                    marginLeft: 134,
+                    padding: '6px 9px',
+                    borderRadius: 6,
+                    background: 'var(--warning-tint)',
+                    color: 'var(--warning)',
+                    fontSize: 10.5,
+                    fontWeight: 500,
+                  }}
+                >
+                  <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                  Duration is {durationTooLong?.duration} days — over 31, which usually means the date range isn't correct. Correct the OCR dates, or flag "Date
+                  Inconsistent" in Fraud Reason — your call.
                 </div>
               )}
             </div>

@@ -226,31 +226,37 @@ real and clickable — only the data source is fake.
   the "outdated" path was exercised against a real date comparison, not
   only a synthetic one.
   - **What happens right after the click** (per explicit direction — the
-    button's effect wasn't obvious enough before this): if either check
-    this button runs needs the reviewer's attention — the outdated-
-    document check (flagged, or a date this couldn't even parse), or the
-    Payslip-only Net Pay declared-vs-calculated check below (a mismatch)
+    button's effect wasn't obvious enough before this): if any of the
+    three checks this button runs needs the reviewer's attention — the
+    outdated-document check (flagged, or a date this couldn't even
+    parse), the Payslip-only Net Pay declared-vs-calculated check (a
+    mismatch), or the Payslip-only Duration sanity check (over 31 days)
     — the OCR panel smooth-scrolls straight to that field's warning so
     it's on screen without the reviewer having to go looking for it, and
     stays on the OCR tab so they can either fix it and re-submit or leave
-    the flag as correct and move on themselves. The outdated-document
-    check takes priority when both fire on the same click (a more
-    foundational problem). Anything else — both checks clean, or a
-    document type neither applies to — has nothing left to look at here,
-    so it switches the panel to the Decision tab automatically.
-    `confirmOcrFields` (`usePortal.ts`) returns both check results it
-    just computed (`ConfirmOcrResult`) so `OcrEditor`'s click handler can
-    act on them in the same click, rather than a separate effect watching
-    for the results to change — an effect keyed off them would re-fire
-    every time the OCR tab remounts (e.g. the reviewer switching back to
-    it after being moved to Decision), which would bounce them straight
-    back. Verified via Playwright: the outdated-coe case scrolls the
-    flagged field into the actual viewport (not just present somewhere
-    off-screen) and stays on OCR, a clean payslip case switches straight
-    to Decision, fixing the flagged date and re-submitting also switches
-    to Decision, and (see the Net Pay check below) a genuine Net Salary
+    the flag as correct and move on themselves. Priority when more than
+    one fires on the same click: outdated-document first (a more
+    foundational problem — the document itself may not even be current),
+    then Net Pay mismatch (it auto-adds a Fraud Reason, so it must not go
+    unnoticed), then Duration (informational only). Anything else — every
+    check clean, or a document type none of them apply to — has nothing
+    left to look at here, so it switches the panel to the Decision tab
+    automatically. `confirmOcrFields` (`usePortal.ts`) returns all three
+    check results it just computed (`ConfirmOcrResult`) so `OcrEditor`'s
+    click handler can act on them in the same click, rather than a
+    separate effect watching for the results to change — an effect keyed
+    off them would re-fire every time the OCR tab remounts (e.g. the
+    reviewer switching back to it after being moved to Decision), which
+    would bounce them straight back. Verified via Playwright: the
+    outdated-coe case scrolls the flagged field into the actual viewport
+    (not just present somewhere off-screen) and stays on OCR, a clean
+    payslip case switches straight to Decision, fixing the flagged date
+    and re-submitting also switches to Decision, a genuine Net Salary
     mismatch scrolls to that field too instead of silently switching tabs
-    with an unnoticed Fraud Reason added.
+    with an unnoticed Fraud Reason added, and a Duration pushed past 31
+    days (by extending Salary Period End Date) scrolls to it with the
+    warning banner visible, leaving Category/Status/Fraud Reason all
+    completely untouched.
 - **Payslip auto-calculated fields** (`lib/payslipCalc.ts`,
   `lib/calculator.ts`) — Payslip-only, per explicit direction:
   - **Duration** recomputes automatically from Salary Period Start/End
@@ -259,6 +265,22 @@ real and clickable — only the data source is fake.
     changes, however that happened (typing directly, or via the OCR
     load itself). Still a normal editable field — typing over it
     sticks until one of the two dates changes again.
+  - **Duration sanity check** (`checkDurationReasonable` in
+    `lib/payslipCalc.ts`) — on "Submit OCR corrections", a Duration over
+    31 days shows a warning next to the field (a salary period longer
+    than a month almost always means the dates are wrong). Purely
+    informational, per explicit direction: **it takes no action at
+    all** — no Fraud Reason, no rejection — it's entirely the
+    reviewer's call whether to correct the OCR dates or flag "Date
+    Inconsistent" in Fraud Reason themselves. Stays at warning/amber
+    severity throughout (never the red/danger styling the outdated-
+    document or Net Pay checks use for their auto-marking outcomes,
+    since this one never marks anything). A too-long Duration also
+    joins the "Submit" button's scroll-to-field priority chain — after
+    an outdated-document flag and a Net Pay mismatch, since those two
+    actually changed something the reviewer needs to see, but still
+    ahead of the plain auto-navigate-to-Decision default, so this
+    heads-up is never silently skipped past either.
   - **Gross Salary = Taxable Income + Non-Taxable Income.** Taxable
     Income, Non-Taxable Income, and Deduction are **brand new fields
     that exist only in this portal** — per explicit direction, they're
@@ -323,16 +345,20 @@ real and clickable — only the data source is fake.
     NOT in this set (see above).
   - Covered by regression cases in `verify:parser` (the expression
     evaluator's arithmetic/edge cases, Duration's exact fixture-matched
-    day count, the Gross/calculated-Net activation rules, and
+    day count, the Gross/calculated-Net activation rules,
     `checkNetPayConsistency`'s not-applicable/unavailable/match/mismatch
-    paths) and confirmed end-to-end via Playwright against demo mode:
-    editing Salary Period End Date live-recomputes Duration, filling in
-    the calculator fields correctly drives Gross Salary while leaving an
-    untouched PhilHealth Premium exactly as OCR left it, Net Salary
-    stays at its declared value throughout, a genuine mismatch scrolls
-    to it and adds "Total Inconsistent" without touching Category/
-    Status, and fixing the calculator to match removes that tag again
-    and advances to Decision.
+    paths, and `checkDurationReasonable`'s not-applicable/unavailable/
+    ok/too-long paths, including the exact 31-day boundary staying "ok"
+    rather than "greater than") and confirmed end-to-end via Playwright
+    against demo mode: editing Salary Period End Date live-recomputes
+    Duration, filling in the calculator fields correctly drives Gross
+    Salary while leaving an untouched PhilHealth Premium exactly as OCR
+    left it, Net Salary stays at its declared value throughout, a
+    genuine mismatch scrolls to it and adds "Total Inconsistent" without
+    touching Category/Status, fixing the calculator to match removes
+    that tag again and advances to Decision, and pushing Duration past
+    31 days scrolls to its warning banner while leaving Category/Status/
+    Fraud Reason completely untouched.
 - **Decision panel** — OCR details is still the tab that opens by
   default when a document is selected (correcting fields comes before
   deciding); a brief change to default to Decision instead — reasoning

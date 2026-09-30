@@ -11,7 +11,7 @@ import { extractDriveFileId } from '../src/lib/driveApi'
 import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseMasterRow, parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
-import { checkNetPayConsistency, computeDurationDays, computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR } from '../src/lib/payslipCalc'
+import { checkDurationReasonable, checkNetPayConsistency, computeDurationDays, computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR } from '../src/lib/payslipCalc'
 import { checkOutdatedDocument, daysSince, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy } from '../src/lib/ruleChecks'
 import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
@@ -476,6 +476,51 @@ console.log('\n=== payslipCalc (checkNetPayConsistency) ===')
 
   if (fail > 0) {
     console.log(`\n${fail} checkNetPayConsistency case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// checkDurationReasonable: purely informational (see its own comments in
+// payslipCalc.ts) - just a status, never anything written to
+// decisionDraft, so these cases only need to check the returned status/
+// duration, not any side effect.
+console.log('\n=== payslipCalc (checkDurationReasonable) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  const sectionsWithDuration = (durationValue: string): OcrSection[] => [
+    { kind: 'fields', title: '', fields: [{ label: 'Duration', value: durationValue, rowIndex: 9 }] },
+  ]
+
+  const notPayslip = checkDurationReasonable('coe', sectionsWithDuration('45'))
+  ok(notPayslip.status === 'not-applicable', `a non-Payslip doc type is always not-applicable - got ${JSON.stringify(notPayslip)}`)
+
+  const blank = checkDurationReasonable('payslip', sectionsWithDuration(''))
+  ok(blank.status === 'unavailable', `a blank Duration is unavailable, never a false warning - got ${JSON.stringify(blank)}`)
+
+  const nonNumeric = checkDurationReasonable('payslip', sectionsWithDuration('not a number'))
+  ok(nonNumeric.status === 'unavailable', `a non-numeric Duration is unavailable, never a false warning - got ${JSON.stringify(nonNumeric)}`)
+
+  // Real payslip_0/payslip_1 fixture values (15 and 16) - both well under
+  // the threshold.
+  const normal15 = checkDurationReasonable('payslip', sectionsWithDuration('15'))
+  ok(normal15.status === 'ok' && normal15.duration === 15, `Duration 15 (real payslip_0 fixture) is ok - got ${JSON.stringify(normal15)}`)
+
+  const atThreshold = checkDurationReasonable('payslip', sectionsWithDuration('31'))
+  ok(atThreshold.status === 'ok' && atThreshold.duration === 31, `Duration exactly at the 31-day threshold is still ok (not "greater than") - got ${JSON.stringify(atThreshold)}`)
+
+  const justOver = checkDurationReasonable('payslip', sectionsWithDuration('32'))
+  ok(justOver.status === 'too-long' && justOver.duration === 32, `Duration 32 (one over the threshold) is too-long - got ${JSON.stringify(justOver)}`)
+
+  const wayOver = checkDurationReasonable('payslip', sectionsWithDuration("'90"))
+  ok(wayOver.status === 'too-long' && wayOver.duration === 90, `Duration 90 with a force-text prefix (as it comes back after a submit) still parses and is too-long - got ${JSON.stringify(wayOver)}`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} checkDurationReasonable case(s) failed.`)
     process.exitCode = 1
   }
 }
