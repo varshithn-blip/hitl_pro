@@ -8,11 +8,13 @@ import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTable
 import {
   checkDurationReasonable,
   checkNetPayConsistency,
+  checkSalaryPeriodRange,
   computePayslipAutoFields,
   EMPTY_PAYSLIP_CALCULATOR,
   PAYSLIP_DATE_FIELDS,
   PAYSLIP_SALARY_FIELDS,
   TOTAL_INCONSISTENT_FRAUD_REASON,
+  type DateRangeCheckResult,
   type DurationCheckResult,
   type NetPayConsistencyResult,
   type PayslipCalculatorInputs,
@@ -48,6 +50,7 @@ export interface ConfirmOcrResult {
   outdated: OutdatedCheckResult
   netPay: NetPayConsistencyResult
   duration: DurationCheckResult
+  dateRange: DateRangeCheckResult
 }
 
 type SyncState = 'idle' | 'saving' | 'saved' | 'error'
@@ -106,6 +109,14 @@ export function usePortal() {
    * checks, this never touches `decisionDraft` at all — see
    * `checkDurationReasonable`'s own comments. */
   const [durationCheckResult, setDurationCheckResult] = useState<DurationCheckResult | null>(null)
+  /** Result of the last "Submit OCR corrections" click's Salary Period
+   * Start/End Date range check (Payslip only) — same lifecycle as the
+   * other three checks. Also purely informational: reads the two date
+   * fields directly (not the Duration field), specifically to catch a
+   * start-after-end date order even when Duration is currently showing a
+   * stale-but-plausible leftover value — see
+   * `checkSalaryPeriodRange`'s own comments. */
+  const [dateRangeCheckResult, setDateRangeCheckResult] = useState<DateRangeCheckResult | null>(null)
   /** The calculator's own reference Net Pay figure — kept LIVE (recomputed
    * on every relevant change, not just on Submit) so OcrEditor can show it
    * next to the real "Net Salary" field for the reviewer to compare by eye
@@ -323,6 +334,7 @@ export function usePortal() {
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
     setDurationCheckResult(null)
+    setDateRangeCheckResult(null)
     setPayslipCalculatedNetPay(null)
     setPayslipCalculator(EMPTY_PAYSLIP_CALCULATOR)
 
@@ -589,6 +601,7 @@ export function usePortal() {
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
     setDurationCheckResult(null)
+    setDateRangeCheckResult(null)
   }, [])
 
   const editTableCell = useCallback((sectionIndex: number, rowIndex: number, colIndex: number, value: string) => {
@@ -605,6 +618,7 @@ export function usePortal() {
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
     setDurationCheckResult(null)
+    setDateRangeCheckResult(null)
   }, [])
 
   const addTableRow = useCallback((sectionIndex: number) => {
@@ -621,6 +635,7 @@ export function usePortal() {
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
     setDurationCheckResult(null)
+    setDateRangeCheckResult(null)
   }, [])
 
   const removeTableRow = useCallback((sectionIndex: number, rowIndex: number) => {
@@ -634,6 +649,7 @@ export function usePortal() {
     setOcrCheckResult(null)
     setNetPayCheckResult(null)
     setDurationCheckResult(null)
+    setDateRangeCheckResult(null)
   }, [])
 
   // --- "Submit OCR corrections" (the button at the end of the OCR editor) ---
@@ -704,7 +720,15 @@ export function usePortal() {
     const durationResult = checkDurationReasonable(docType, draftSections)
     setDurationCheckResult(durationResult)
 
-    return { outdated: result, netPay: netPayResult, duration: durationResult }
+    // Salary Period Start/End Date range check (Payslip only) — also
+    // purely informational. Reads the two date fields directly rather
+    // than the Duration field above, specifically so a start-after-end
+    // date order is still caught even when Duration is currently showing
+    // a stale (no-longer-recomputed) value — see checkSalaryPeriodRange.
+    const dateRangeResult = checkSalaryPeriodRange(docType, draftSections)
+    setDateRangeCheckResult(dateRangeResult)
+
+    return { outdated: result, netPay: netPayResult, duration: durationResult, dateRange: dateRangeResult }
   }, [selectedRow, draftSections, payslipCalculator])
 
   const setPayslipCalculatorExpr = useCallback((field: keyof PayslipCalculatorInputs, value: string) => {
@@ -881,6 +905,7 @@ export function usePortal() {
     ocrCheckResult,
     netPayCheckResult,
     durationCheckResult,
+    dateRangeCheckResult,
     payslipCalculatedNetPay,
     confirmOcrFields,
     payslipCalculator,

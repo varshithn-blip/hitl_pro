@@ -227,21 +227,25 @@ real and clickable — only the data source is fake.
   only a synthetic one.
   - **What happens right after the click** (per explicit direction — the
     button's effect wasn't obvious enough before this): if any of the
-    three checks this button runs needs the reviewer's attention — the
+    four checks this button runs needs the reviewer's attention — the
     outdated-document check (flagged, or a date this couldn't even
-    parse), the Payslip-only Net Pay declared-vs-calculated check (a
-    mismatch), or the Payslip-only Duration sanity check (over 31 days)
-    — the OCR panel smooth-scrolls straight to that field's warning so
-    it's on screen without the reviewer having to go looking for it, and
-    stays on the OCR tab so they can either fix it and re-submit or leave
-    the flag as correct and move on themselves. Priority when more than
-    one fires on the same click: outdated-document first (a more
-    foundational problem — the document itself may not even be current),
-    then Net Pay mismatch (it auto-adds a Fraud Reason, so it must not go
-    unnoticed), then Duration (informational only). Anything else — every
+    parse), the Payslip-only Salary Period date-range check (Start Date
+    after End Date), the Payslip-only Net Pay declared-vs-calculated
+    check (a mismatch), or the Payslip-only Duration sanity checks (over
+    31 days, or zero/negative) — the OCR panel smooth-scrolls straight to
+    that field's warning so it's on screen without the reviewer having to
+    go looking for it, and stays on the OCR tab so they can either fix it
+    and re-submit or leave the flag as correct and move on themselves.
+    Priority when more than one fires on the same click: outdated-
+    document first (a more foundational problem — the document itself
+    may not even be current), then the date-range check (equally
+    foundational — nothing else makes sense if the two dates are out of
+    order), then Net Pay mismatch (it auto-adds a Fraud Reason, so it
+    must not go unnoticed), then Duration (informational only, and often
+    moot once the date range itself is fixed). Anything else — every
     check clean, or a document type none of them apply to — has nothing
     left to look at here, so it switches the panel to the Decision tab
-    automatically. `confirmOcrFields` (`usePortal.ts`) returns all three
+    automatically. `confirmOcrFields` (`usePortal.ts`) returns all four
     check results it just computed (`ConfirmOcrResult`) so `OcrEditor`'s
     click handler can act on them in the same click, rather than a
     separate effect watching for the results to change — an effect keyed
@@ -253,34 +257,61 @@ real and clickable — only the data source is fake.
     payslip case switches straight to Decision, fixing the flagged date
     and re-submitting also switches to Decision, a genuine Net Salary
     mismatch scrolls to that field too instead of silently switching tabs
-    with an unnoticed Fraud Reason added, and a Duration pushed past 31
-    days (by extending Salary Period End Date) scrolls to it with the
-    warning banner visible, leaving Category/Status/Fraud Reason all
-    completely untouched.
+    with an unnoticed Fraud Reason added, a Duration pushed past 31 days
+    (by extending Salary Period End Date) scrolls to it with the warning
+    banner visible, an out-of-order date range (Start Date pushed past
+    End Date) scrolls to End Date with Duration left visibly stale, and a
+    directly-typed negative Duration (with dates blanked, so the auto-
+    sync doesn't just overwrite it) scrolls to it with its own warning —
+    all four leaving Category/Status/Fraud Reason completely untouched.
 - **Payslip auto-calculated fields** (`lib/payslipCalc.ts`,
   `lib/calculator.ts`) — Payslip-only, per explicit direction:
   - **Duration** recomputes automatically from Salary Period Start/End
     Date (inclusive day count — confirmed against the real fixtures:
     01/08–15/08 reads back as Duration "15") every time either date
     changes, however that happened (typing directly, or via the OCR
-    load itself). Still a normal editable field — typing over it
-    sticks until one of the two dates changes again.
-  - **Duration sanity check** (`checkDurationReasonable` in
-    `lib/payslipCalc.ts`) — on "Submit OCR corrections", a Duration over
-    31 days shows a warning next to the field (a salary period longer
-    than a month almost always means the dates are wrong). Purely
-    informational, per explicit direction: **it takes no action at
-    all** — no Fraud Reason, no rejection — it's entirely the
-    reviewer's call whether to correct the OCR dates or flag "Date
-    Inconsistent" in Fraud Reason themselves. Stays at warning/amber
-    severity throughout (never the red/danger styling the outdated-
-    document or Net Pay checks use for their auto-marking outcomes,
-    since this one never marks anything). A too-long Duration also
-    joins the "Submit" button's scroll-to-field priority chain — after
-    an outdated-document flag and a Net Pay mismatch, since those two
-    actually changed something the reviewer needs to see, but still
-    ahead of the plain auto-navigate-to-Decision default, so this
-    heads-up is never silently skipped past either.
+    load itself). Still a normal editable field, but a manual edit only
+    actually sticks while the auto-calc has nothing to compute from the
+    dates (blank/unparseable, or Start after End — see the date-range
+    check right below); as long as the two dates themselves are valid,
+    the recompute effect re-fires on every edit (including editing
+    Duration itself) and overwrites it back to the date-derived value.
+    Worth knowing before relying on hand-typing over it.
+  - **Salary Period date-range check** (`checkSalaryPeriodRange` in
+    `lib/payslipCalc.ts`) — on "Submit OCR corrections", warns when
+    Salary Period Start Date is after End Date. Added specifically
+    because `computeDurationDays` returns null (not a negative number)
+    for an out-of-order range, and the auto-sync above then leaves
+    Duration exactly as it was — so without this check, a reviewer could
+    edit Start Date past End Date and see Duration keep showing its old,
+    now-meaningless value with no indication anything's wrong. Purely
+    informational, same as the Duration checks below: takes no action,
+    just flags it so the reviewer can fix the dates themselves. The
+    warning shows under End Date and explicitly calls out that Duration
+    above may be stale until it's fixed.
+  - **Duration sanity checks** (`checkDurationReasonable` in
+    `lib/payslipCalc.ts`) — on "Submit OCR corrections", warns when
+    Duration is either **over 31 days** (a salary period longer than a
+    month almost always means the dates are wrong) or **zero/negative**
+    (not a valid pay period at all — matches the real taxonomy's own
+    "Duration <= 0" rejection reason). The negative case is mostly only
+    reachable when the dates are blank/invalid (see above) — otherwise
+    the auto-sync overwrites a hand-typed negative value right back to
+    whatever the dates compute — but is still checked defensively, since
+    nothing stops a reviewer from typing a negative number into a
+    free-text field. Purely informational either way, per explicit
+    direction: **these take no action at all** — no Fraud Reason, no
+    rejection — it's entirely the reviewer's call whether to correct the
+    OCR dates or Duration itself, or flag "Date Inconsistent" in Fraud
+    Reason. Stays at warning/amber severity throughout (never the
+    red/danger styling the outdated-document or Net Pay checks use for
+    their auto-marking outcomes, since these never mark anything). Both
+    this and the date-range check above join the "Submit" button's
+    scroll-to-field priority chain — right after an outdated-document
+    flag (date-range) and after that plus a Net Pay mismatch (Duration),
+    since those actually changed something the reviewer needs to see,
+    but still ahead of the plain auto-navigate-to-Decision default, so
+    neither heads-up is ever silently skipped past.
   - **Gross Salary = Taxable Income + Non-Taxable Income.** Taxable
     Income, Non-Taxable Income, and Deduction are **brand new fields
     that exist only in this portal** — per explicit direction, they're
@@ -347,18 +378,28 @@ real and clickable — only the data source is fake.
     evaluator's arithmetic/edge cases, Duration's exact fixture-matched
     day count, the Gross/calculated-Net activation rules,
     `checkNetPayConsistency`'s not-applicable/unavailable/match/mismatch
-    paths, and `checkDurationReasonable`'s not-applicable/unavailable/
-    ok/too-long paths, including the exact 31-day boundary staying "ok"
-    rather than "greater than") and confirmed end-to-end via Playwright
+    paths, `checkDurationReasonable`'s not-applicable/unavailable/ok/
+    too-long/negative paths (including the exact 31-day boundary staying
+    "ok" rather than "greater than", and 0 counting as "negative" too,
+    not just strictly-below-zero), and `checkSalaryPeriodRange`'s
+    not-applicable/unavailable/ok/invalid-range paths, including Start
+    equal to End staying "ok") and confirmed end-to-end via Playwright
     against demo mode: editing Salary Period End Date live-recomputes
     Duration, filling in the calculator fields correctly drives Gross
     Salary while leaving an untouched PhilHealth Premium exactly as OCR
     left it, Net Salary stays at its declared value throughout, a
     genuine mismatch scrolls to it and adds "Total Inconsistent" without
     touching Category/Status, fixing the calculator to match removes
-    that tag again and advances to Decision, and pushing Duration past
-    31 days scrolls to its warning banner while leaving Category/Status/
-    Fraud Reason completely untouched.
+    that tag again and advances to Decision, pushing Duration past 31
+    days scrolls to its warning banner, pushing Start Date past an
+    unchanged End Date scrolls to End Date and leaves Duration visibly
+    stale (never silently wrong-but-unremarked-on), fixing the date
+    order live-recomputes Duration again before any Submit click, and a
+    directly-typed negative Duration (with the auto-sync made dormant by
+    blanking a date first — see the Duration bullet above on why that's
+    needed to make a manual edit stick at all) scrolls to its own
+    warning — all of it leaving Category/Status/Fraud Reason completely
+    untouched throughout.
 - **Decision panel** — OCR details is still the tab that opens by
   default when a document is selected (correcting fields comes before
   deciding); a brief change to default to Decision instead — reasoning

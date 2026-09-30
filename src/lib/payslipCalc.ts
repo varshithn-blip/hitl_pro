@@ -222,12 +222,23 @@ export type DurationCheckResult =
   | { status: 'unavailable' }
   | { status: 'ok'; duration: number }
   | { status: 'too-long'; duration: number }
+  | { status: 'negative'; duration: number }
 
 /** Checks whatever is CURRENTLY in the Duration field — however it got
  * there, auto-computed from the two date fields or typed directly by
- * the reviewer — against `DURATION_WARNING_THRESHOLD_DAYS`. `unavailable`
- * covers a blank or non-numeric value (nothing to warn about yet, not a
- * false "too long"). */
+ * the reviewer. `unavailable` covers a blank or non-numeric value
+ * (nothing to warn about yet, not a false flag).
+ *
+ * `negative` covers zero and below, not just strictly-negative numbers —
+ * a zero-day pay period is exactly as nonsensical as a negative one, and
+ * the real taxonomy's own "Duration <= 0" rejection reason (see
+ * lib/taxonomy.ts) draws the line at the same place. `computeDurationDays`
+ * itself can never produce this (it returns null rather than a negative
+ * number when the dates are out of order — see `checkSalaryPeriodRange`
+ * below for THAT check), so this only ever fires when the reviewer has
+ * typed a value directly into Duration; still worth checking, since
+ * nothing else in this app stops them from typing "-5" into a free-text
+ * field. */
 export function checkDurationReasonable(baseDocType: string, sections: OcrSection[]): DurationCheckResult {
   if (baseDocType !== 'payslip') return { status: 'not-applicable' }
 
@@ -235,5 +246,38 @@ export function checkDurationReasonable(baseDocType: string, sections: OcrSectio
   const duration = field ? parseDeclaredAmount(field.value) : null
   if (duration === null) return { status: 'unavailable' }
 
+  if (duration <= 0) return { status: 'negative', duration }
   return duration > DURATION_WARNING_THRESHOLD_DAYS ? { status: 'too-long', duration } : { status: 'ok', duration }
+}
+
+export type DateRangeCheckResult =
+  | { status: 'not-applicable' }
+  | { status: 'unavailable' }
+  | { status: 'ok' }
+  | { status: 'invalid-range' }
+
+/** Checks Salary Period Start/End Date DIRECTLY against each other —
+ * independent of whatever the Duration field currently shows. This
+ * matters specifically because `computeDurationDays` returns null (not a
+ * negative number) when the dates are out of order, and
+ * `syncComputedField` treats null as "leave the real field alone" (see
+ * usePortal.ts) — so if a reviewer edits Start Date to fall after an
+ * unchanged End Date, Duration silently keeps showing its LAST valid
+ * (and now stale/meaningless) value instead of updating, with nothing
+ * else in this app ever pointing out that the two dates themselves
+ * don't make sense. This check exists purely to catch that: it reads
+ * the two date fields itself, not the Duration field. `unavailable`
+ * covers a blank/unparseable date on either side — nothing to compare
+ * yet, not a false flag. Purely informational, same as
+ * `checkDurationReasonable` — takes no action of its own. */
+export function checkSalaryPeriodRange(baseDocType: string, sections: OcrSection[]): DateRangeCheckResult {
+  if (baseDocType !== 'payslip') return { status: 'not-applicable' }
+
+  const startField = findField(sections, PAYSLIP_DATE_FIELDS.start)
+  const endField = findField(sections, PAYSLIP_DATE_FIELDS.end)
+  const start = startField ? parseDdMmYyyy(startField.value) : null
+  const end = endField ? parseDdMmYyyy(endField.value) : null
+  if (!start || !end) return { status: 'unavailable' }
+
+  return start.getTime() > end.getTime() ? { status: 'invalid-range' } : { status: 'ok' }
 }

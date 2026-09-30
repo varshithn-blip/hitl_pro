@@ -87,6 +87,7 @@ export default function App() {
                         checkResult={p.ocrCheckResult}
                         netPayCheckResult={p.netPayCheckResult}
                         durationCheckResult={p.durationCheckResult}
+                        dateRangeCheckResult={p.dateRangeCheckResult}
                         calculatedNetPay={p.payslipCalculatedNetPay}
                         onConfirmOcr={p.confirmOcrFields}
                         onNavigateToDecision={() => setRightTab('decision')}

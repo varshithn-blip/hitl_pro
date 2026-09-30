@@ -11,7 +11,14 @@ import { extractDriveFileId } from '../src/lib/driveApi'
 import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseMasterRow, parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
-import { checkDurationReasonable, checkNetPayConsistency, computeDurationDays, computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR } from '../src/lib/payslipCalc'
+import {
+  checkDurationReasonable,
+  checkNetPayConsistency,
+  checkSalaryPeriodRange,
+  computeDurationDays,
+  computePayslipAutoFields,
+  EMPTY_PAYSLIP_CALCULATOR,
+} from '../src/lib/payslipCalc'
 import { checkOutdatedDocument, daysSince, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy } from '../src/lib/ruleChecks'
 import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
@@ -519,8 +526,65 @@ console.log('\n=== payslipCalc (checkDurationReasonable) ===')
   const wayOver = checkDurationReasonable('payslip', sectionsWithDuration("'90"))
   ok(wayOver.status === 'too-long' && wayOver.duration === 90, `Duration 90 with a force-text prefix (as it comes back after a submit) still parses and is too-long - got ${JSON.stringify(wayOver)}`)
 
+  // "Duration can not be - either" - zero and negative both count as
+  // invalid, matching the real taxonomy's own "Duration <= 0" rejection
+  // reason (lib/taxonomy.ts).
+  const zero = checkDurationReasonable('payslip', sectionsWithDuration('0'))
+  ok(zero.status === 'negative' && zero.duration === 0, `Duration 0 is "negative" (invalid), not "ok" - got ${JSON.stringify(zero)}`)
+
+  const negative = checkDurationReasonable('payslip', sectionsWithDuration('-5'))
+  ok(negative.status === 'negative' && negative.duration === -5, `Duration -5 (reviewer-typed, never produced by computeDurationDays itself) is negative - got ${JSON.stringify(negative)}`)
+
   if (fail > 0) {
     console.log(`\n${fail} checkDurationReasonable case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// checkSalaryPeriodRange: reads Salary Period Start/End Date DIRECTLY,
+// independent of whatever the Duration field currently shows - see its
+// own comments in payslipCalc.ts for why that independence matters (a
+// stale Duration would otherwise mask a start-after-end date order).
+console.log('\n=== payslipCalc (checkSalaryPeriodRange) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  const sectionsWithRange = (start: string, end: string): OcrSection[] => [
+    {
+      kind: 'fields',
+      title: '',
+      fields: [
+        { label: 'Salary Period Start Date', value: start, rowIndex: 6 },
+        { label: 'Salary Period End Date', value: end, rowIndex: 7 },
+      ],
+    },
+  ]
+
+  const notPayslip = checkSalaryPeriodRange('coe', sectionsWithRange('15/08/2026', '01/08/2026'))
+  ok(notPayslip.status === 'not-applicable', `a non-Payslip doc type is always not-applicable - got ${JSON.stringify(notPayslip)}`)
+
+  const blankStart = checkSalaryPeriodRange('payslip', sectionsWithRange('', '15/08/2026'))
+  ok(blankStart.status === 'unavailable', `a blank Start Date is unavailable, never a false flag - got ${JSON.stringify(blankStart)}`)
+
+  const unparseableEnd = checkSalaryPeriodRange('payslip', sectionsWithRange('01/08/2026', 'not a date'))
+  ok(unparseableEnd.status === 'unavailable', `an unparseable End Date is unavailable, never a false flag - got ${JSON.stringify(unparseableEnd)}`)
+
+  // Real payslip_0 fixture dates, in the correct order.
+  const inOrder = checkSalaryPeriodRange('payslip', sectionsWithRange('01/08/2026', '15/08/2026'))
+  ok(inOrder.status === 'ok', `Start before End (real payslip_0 fixture) is ok - got ${JSON.stringify(inOrder)}`)
+
+  const sameDay = checkSalaryPeriodRange('payslip', sectionsWithRange('01/08/2026', '01/08/2026'))
+  ok(sameDay.status === 'ok', `Start equal to End (a 1-day period) is still ok, not invalid - got ${JSON.stringify(sameDay)}`)
+
+  const reversed = checkSalaryPeriodRange('payslip', sectionsWithRange('15/08/2026', '01/08/2026'))
+  ok(reversed.status === 'invalid-range', `Start after End is invalid-range - got ${JSON.stringify(reversed)}`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} checkSalaryPeriodRange case(s) failed.`)
     process.exitCode = 1
   }
 }

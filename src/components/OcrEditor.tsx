@@ -4,6 +4,7 @@ import {
   PAYSLIP_AUTO_FIELD_LABELS,
   PAYSLIP_DATE_FIELDS,
   PAYSLIP_SALARY_FIELDS,
+  type DateRangeCheckResult,
   type DurationCheckResult,
   type NetPayConsistencyResult,
   type PayslipCalculatorInputs,
@@ -46,7 +47,14 @@ interface Props {
    * to the Duration field for the reviewer to notice and decide for
    * themselves (see usePortal.ts's `checkDurationReasonable`). */
   durationCheckResult: DurationCheckResult | null
-  /** Runs all three checks and returns their results synchronously — see
+  /** Result of the last Submit click's Salary Period Start/End Date range
+   * check (Payslip only) — same lifecycle and purely-informational
+   * nature as `durationCheckResult`, but reads the two date fields
+   * directly rather than the Duration field (see usePortal.ts's
+   * `checkSalaryPeriodRange`), so it still catches a start-after-end
+   * date order even if Duration is currently showing a stale value. */
+  dateRangeCheckResult: DateRangeCheckResult | null
+  /** Runs all four checks and returns their results synchronously — see
    * this component's own submit handler below, which uses the return
    * value (not a separate effect on the stored results) to decide
    * whether to scroll to a flagged field or hand off to
@@ -84,6 +92,7 @@ export function OcrEditor({
   netPayCheckResult,
   calculatedNetPay,
   durationCheckResult,
+  dateRangeCheckResult,
   onConfirmOcr,
   onNavigateToDecision,
   documentType,
@@ -110,23 +119,29 @@ export function OcrEditor({
   // themselves. A Net Pay mismatch gets the same treatment — scrolled to
   // the real Net Salary field, since it's a fraud signal getting quietly
   // added to a Decision-tab popover the reviewer might otherwise never
-  // notice. A too-long Duration gets it too, purely so the reviewer
-  // actually sees the heads-up (it takes no action of its own — see
-  // checkDurationReasonable). Priority when more than one fires on the
-  // same click: outdated-document first (a more foundational problem —
-  // the document itself may not even be current), then Net Pay mismatch
-  // (an auto-added Fraud Reason, so it must not go unnoticed), then
-  // Duration (informational only). Anything else — every check clean, or
-  // a document type none of them apply to — has nothing left for the
+  // notice. An invalid Salary Period date range, or a Duration that's
+  // too long or not positive, get it too, purely so the reviewer
+  // actually sees the heads-up (neither takes any action of its own —
+  // see checkSalaryPeriodRange/checkDurationReasonable). Priority when
+  // more than one fires on the same click: outdated-document first (a
+  // more foundational problem — the document itself may not even be
+  // current), then the date-range check (equally foundational — nothing
+  // else here makes sense if the two dates are out of order), then Net
+  // Pay mismatch (an auto-added Fraud Reason, so it must not go
+  // unnoticed), then Duration (informational only, and often moot once
+  // the date range itself is fixed). Anything else — every check clean,
+  // or a document type none of them apply to — has nothing left for the
   // reviewer to look at here, so it advances them straight to Decision.
   const handleConfirmOcr = () => {
     const result = onConfirmOcr()
     if (!result) return
     if (result.outdated.status === 'outdated' || result.outdated.status === 'unparseable') {
       fieldRefs.current.get(result.outdated.fieldLabel)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    } else if (result.dateRange.status === 'invalid-range') {
+      fieldRefs.current.get(PAYSLIP_DATE_FIELDS.end)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     } else if (result.netPay.status === 'mismatch') {
       fieldRefs.current.get(PAYSLIP_SALARY_FIELDS.netSalary)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    } else if (result.duration.status === 'too-long') {
+    } else if (result.duration.status === 'too-long' || result.duration.status === 'negative') {
       fieldRefs.current.get(PAYSLIP_DATE_FIELDS.duration)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     } else {
       onNavigateToDecision()
@@ -145,6 +160,7 @@ export function OcrEditor({
             netPayCheckResult={netPayCheckResult}
             calculatedNetPay={calculatedNetPay}
             durationCheckResult={durationCheckResult}
+            dateRangeCheckResult={dateRangeCheckResult}
             registerFieldRef={registerFieldRef}
           />
         ) : (
@@ -194,6 +210,7 @@ export function OcrEditor({
           Runs automatic checks (e.g. outdated document) against your corrected values — doesn't save anything by itself.
         </span>
         <CheckResultStatus result={checkResult} />
+        <DateRangeCheckStatus result={dateRangeCheckResult} />
         <NetPayCheckStatus result={netPayCheckResult} />
         <DurationCheckStatus result={durationCheckResult} />
       </div>
@@ -261,12 +278,12 @@ function NetPayCheckStatus({ result }: { result: NetPayConsistencyResult | null 
 }
 
 /** The Duration check's own feedback line. Deliberately never uses the
- * danger/red styling the other two checks use for their "something's
- * wrong" state — per explicit direction this one takes no action at all,
- * so it stays at warning/amber severity throughout, matching the inline
- * banner below. Silent for 'not-applicable' and 'unavailable' (blank/
- * non-numeric Duration — nothing to warn about yet), same as the other
- * two status lines. */
+ * danger/red styling the other two marking checks use for their
+ * "something's wrong" state — per explicit direction this one takes no
+ * action at all, so it stays at warning/amber severity throughout,
+ * matching the inline banner below. Silent for 'not-applicable' and
+ * 'unavailable' (blank/non-numeric Duration — nothing to warn about
+ * yet), same as the other status lines. */
 function DurationCheckStatus({ result }: { result: DurationCheckResult | null }) {
   if (!result || result.status === 'not-applicable' || result.status === 'unavailable') return null
   if (result.status === 'ok') {
@@ -280,7 +297,32 @@ function DurationCheckStatus({ result }: { result: DurationCheckResult | null })
   return (
     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--warning)' }}>
       <AlertTriangle size={11} />
-      Duration is {result.duration} days — over 31, scrolled up to it above.
+      {result.status === 'negative'
+        ? `Duration is ${result.duration} days — not a valid pay period, scrolled up to it above.`
+        : `Duration is ${result.duration} days — over 31, scrolled up to it above.`}
+    </span>
+  )
+}
+
+/** The Salary Period Start/End Date range check's own feedback line —
+ * same warning/amber-only severity as `DurationCheckStatus` above, for
+ * the same reason (purely informational, never marks anything). Silent
+ * for 'not-applicable' and 'unavailable' (a blank/unparseable date on
+ * either side — nothing to compare yet). */
+function DateRangeCheckStatus({ result }: { result: DateRangeCheckResult | null }) {
+  if (!result || result.status === 'not-applicable' || result.status === 'unavailable') return null
+  if (result.status === 'ok') {
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, color: 'var(--success)' }}>
+        <Check size={11} />
+        Salary Period dates are in order.
+      </span>
+    )
+  }
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--warning)' }}>
+      <AlertTriangle size={11} />
+      Salary Period Start Date is after End Date — scrolled up to it above.
     </span>
   )
 }
@@ -310,6 +352,7 @@ function FieldsSection({
   netPayCheckResult,
   calculatedNetPay,
   durationCheckResult,
+  dateRangeCheckResult,
   registerFieldRef,
 }: {
   section: Extract<OcrSection, { kind: 'fields' }>
@@ -318,6 +361,7 @@ function FieldsSection({
   netPayCheckResult: NetPayConsistencyResult | null
   calculatedNetPay: string | null
   durationCheckResult: DurationCheckResult | null
+  dateRangeCheckResult: DateRangeCheckResult | null
   /** Registers this field row's wrapper div so OcrEditor's submit handler
    * can scroll straight to it the instant a check flags it — see
    * OcrEditor's `fieldRefs`. Called for every field, flagged or not, so
@@ -349,9 +393,18 @@ function FieldsSection({
           const netPayMismatch = isNetSalaryField && netPayCheckResult?.status === 'mismatch'
           // Duration is the one field checkDurationReasonable ever looks
           // at — same "only exists on Payslip's schema" reasoning as
-          // isNetSalaryField above.
+          // isNetSalaryField above. Covers both "problem" outcomes (too
+          // long, or zero/negative) in one banner — see its rendering
+          // below for the per-status message.
           const isDurationField = field.label === PAYSLIP_DATE_FIELDS.duration
-          const durationTooLong = isDurationField && durationCheckResult?.status === 'too-long' ? durationCheckResult : null
+          const durationProblem =
+            isDurationField && (durationCheckResult?.status === 'too-long' || durationCheckResult?.status === 'negative') ? durationCheckResult : null
+          // Salary Period End Date is where checkSalaryPeriodRange's
+          // warning shows — chosen over Start Date only because it's the
+          // later of the two fields in this schema, so the banner reads
+          // naturally as "these two dates, together, don't make sense."
+          const isEndDateField = field.label === PAYSLIP_DATE_FIELDS.end
+          const dateRangeInvalid = isEndDateField && dateRangeCheckResult?.status === 'invalid-range'
           return (
             <div key={fIdx} ref={(el) => registerFieldRef(field.label, el)} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -402,11 +455,13 @@ function FieldsSection({
                     minWidth: 0,
                     ...(flagged
                       ? { borderColor: outdated ? 'var(--danger)' : 'var(--warning)' }
-                      : netPayMismatch
-                        ? { borderColor: 'var(--danger)' }
-                        : durationTooLong
-                          ? { borderColor: 'var(--warning)' }
-                          : undefined),
+                      : dateRangeInvalid
+                        ? { borderColor: 'var(--warning)' }
+                        : netPayMismatch
+                          ? { borderColor: 'var(--danger)' }
+                          : durationProblem
+                            ? { borderColor: 'var(--warning)' }
+                            : undefined),
                   }}
                 />
                 {hasSuggestions && (
@@ -464,6 +519,32 @@ function FieldsSection({
                   Couldn't verify this as a date (expected dd/mm/yyyy) — double-check the format.
                 </div>
               )}
+              {/* Purely informational, per explicit direction: this
+                  never marks anything — it just tells the reviewer the
+                  Salary Period dates are out of order (Start Date after
+                  End Date), which is also WHY Duration above might not
+                  have updated (computeDurationDays leaves a stale value
+                  in place rather than guessing — see
+                  checkSalaryPeriodRange's own comments). */}
+              {dateRangeInvalid && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 6,
+                    marginLeft: 134,
+                    padding: '6px 9px',
+                    borderRadius: 6,
+                    background: 'var(--warning-tint)',
+                    color: 'var(--warning)',
+                    fontSize: 10.5,
+                    fontWeight: 500,
+                  }}
+                >
+                  <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                  Salary Period Start Date is after this End Date — check both fields (Duration above may be stale until this is fixed).
+                </div>
+              )}
               {/* The declared-vs-calculated comparison for Net Salary,
                   per explicit direction: the real field always keeps the
                   document's own declared value, and this reference row
@@ -498,11 +579,12 @@ function FieldsSection({
               )}
               {/* Purely informational, per explicit direction: this
                   never marks anything (no Fraud Reason, no rejection) —
-                  it just tells the reviewer a salary period over a
-                  month long usually means the dates are wrong, and
-                  leaves the call (correct the OCR dates, or flag "Date
-                  Inconsistent" in Fraud Reason) entirely up to them. */}
-              {durationTooLong && (
+                  it just tells the reviewer Duration looks wrong (either
+                  over a month long, or not a positive number at all) and
+                  leaves the call (correct the OCR dates or Duration
+                  itself, or flag "Date Inconsistent" in Fraud Reason)
+                  entirely up to them. */}
+              {durationProblem && (
                 <div
                   style={{
                     display: 'flex',
@@ -518,8 +600,9 @@ function FieldsSection({
                   }}
                 >
                   <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
-                  Duration is {durationTooLong?.duration} days — over 31, which usually means the date range isn't correct. Correct the OCR dates, or flag "Date
-                  Inconsistent" in Fraud Reason — your call.
+                  {durationProblem.status === 'negative'
+                    ? `Duration is ${durationProblem.duration} days — a pay period can't be zero or negative days. Correct the dates or this field, or flag "Date Inconsistent" in Fraud Reason — your call.`
+                    : `Duration is ${durationProblem.duration} days — over 31, which usually means the date range isn't correct. Correct the OCR dates, or flag "Date Inconsistent" in Fraud Reason — your call.`}
                 </div>
               )}
             </div>
