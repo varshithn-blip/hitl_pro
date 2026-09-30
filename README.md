@@ -191,6 +191,40 @@ real and clickable — only the data source is fake.
   full on every submit already. A genuinely untouched plain-text field
   is left alone, so this doesn't turn every submit into a full-document
   rewrite.
+- **Automatic rule checks** (`lib/ruleChecks.ts`) — currently one check:
+  a document is flagged **Outdated Document** when its relevant date
+  field is more than 60 days in the past (Payslip's "Salary Period End
+  Date", Certificate of Employment's "Document Issued Date" — no rule
+  yet for loan/credit). Deliberately does **not** run automatically on
+  OCR load or on every keystroke — per explicit direction, it only runs
+  when the reviewer clicks the **"Submit OCR corrections"** button added
+  at the very end of the OCR editor, so it's always checking the
+  reviewer's own corrected value, never a possibly-misread raw OCR date
+  (see `forceTextIfDateOrNumeric`'s own comments on how often that
+  happens). That button is a separate, purely local action from the
+  Decision panel's actual "Submit & Next" — it never writes to Sheets by
+  itself, it only runs the check and, if triggered, sets
+  `rejectionReason`/`category`/`status` the same way picking a reason
+  from the dropdown does (see the Decision panel bullet below) — fully
+  overridable by the reviewer afterward, same as a manual pick. The
+  flagged field also gets an inline warning banner directly under
+  itself (a red-bordered input + explanation), per explicit direction
+  ("show a warning near the field"), not just a generic page-level
+  banner; every other outcome (a doc type with no rule, a field that
+  couldn't be found/parsed, or a genuine clean check) gets its own status
+  line under the button instead, so clicking it never feels like it did
+  nothing. Editing anything afterward clears the last check's result
+  (it's now stale) without touching whatever `rejectionReason`/
+  `category`/`status` are currently set to — those only get auto-cleared
+  if a **later** re-check comes back clean AND they still exactly match
+  what the rule itself set, so a reviewer's own manual override in
+  between is never silently overwritten. Covered by regression cases in
+  `verify:parser` (date parsing, both document types, the not-applicable/
+  unparseable paths) and confirmed end-to-end via Playwright against
+  demo mode — the demo fixture's own Certificate of Employment date
+  happened to be genuinely more than 60 days old as of this build, so
+  the "outdated" path was exercised against a real date comparison, not
+  only a synthetic one.
 - **Decision panel** — OCR details is still the tab that opens by
   default when a document is selected (correcting fields comes before
   deciding); a brief change to default to Decision instead — reasoning

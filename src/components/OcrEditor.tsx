@@ -1,5 +1,6 @@
+import type { OutdatedCheckResult } from '../lib/ruleChecks'
 import type { OcrSection } from '../lib/types'
-import { AlertTriangle, Plus, X } from './icons'
+import { AlertTriangle, Check, Plus, X } from './icons'
 
 interface Props {
   sections: OcrSection[]
@@ -7,6 +8,15 @@ interface Props {
   onTableCellChange: (sectionIndex: number, rowIndex: number, colIndex: number, value: string) => void
   onAddTableRow: (sectionIndex: number) => void
   onRemoveTableRow: (sectionIndex: number, rowIndex: number) => void
+  /** Result of the last time the reviewer clicked the "Submit OCR
+   * corrections" button below, or null if they haven't yet (or have
+   * edited something since — see usePortal.ts's edit handlers). Passed
+   * through to `FieldsSection` so the one field a check actually looked
+   * at (e.g. Salary Period End Date) can show its warning right next to
+   * itself, not as a generic banner disconnected from the field it's
+   * about. */
+  checkResult: OutdatedCheckResult | null
+  onConfirmOcr: () => void
 }
 
 const fieldBoxStyle: React.CSSProperties = {
@@ -17,12 +27,12 @@ const fieldBoxStyle: React.CSSProperties = {
   width: '100%',
 }
 
-export function OcrEditor({ sections, onFieldChange, onTableCellChange, onAddTableRow, onRemoveTableRow }: Props) {
+export function OcrEditor({ sections, onFieldChange, onTableCellChange, onAddTableRow, onRemoveTableRow, checkResult, onConfirmOcr }: Props) {
   return (
     <div className="rd-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 18 }}>
       {sections.map((section, sIdx) =>
         section.kind === 'fields' ? (
-          <FieldsSection key={sIdx} section={section} onFieldChange={(fIdx, v) => onFieldChange(sIdx, fIdx, v)} />
+          <FieldsSection key={sIdx} section={section} onFieldChange={(fIdx, v) => onFieldChange(sIdx, fIdx, v)} checkResult={checkResult} />
         ) : (
           <TableSection
             key={sIdx}
@@ -33,7 +43,77 @@ export function OcrEditor({ sections, onFieldChange, onTableCellChange, onAddTab
           />
         ),
       )}
+
+      {/* Deliberately separate from the Decision panel's own "Submit &
+          Next" — this never saves anything to Sheets, it only runs the
+          automatic rule checks (e.g. outdated-document) against whatever
+          the reviewer has corrected the fields to. Placed at the very
+          end of the OCR fields, per explicit direction, specifically so
+          this only ever checks the reviewer's OWN corrected values, not
+          a possibly-misread raw OCR date — it's a deliberate manual step,
+          not something that runs automatically on load or on every
+          keystroke. */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 4, borderTop: '1px solid var(--border)' }}>
+        <button
+          onClick={onConfirmOcr}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 7,
+            height: 38,
+            borderRadius: 8,
+            border: '1px solid var(--border-strong)',
+            background: 'var(--bg-panel)',
+            color: 'var(--text-primary)',
+            fontSize: 12.5,
+            fontWeight: 600,
+            marginTop: 8,
+          }}
+        >
+          <Check size={14} />
+          Submit OCR corrections
+        </button>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>
+          Runs automatic checks (e.g. outdated document) against your corrected values — doesn't save anything by itself.
+        </span>
+        <CheckResultStatus result={checkResult} />
+      </div>
     </div>
+  )
+}
+
+/** The button's own feedback line — covers every outcome, not just the
+ * "flagged" one (which also gets a more prominent warning right next to
+ * the specific field, see FieldsSection below): a document type with no
+ * rule, a field this couldn't find/parse, or a genuine clean check all
+ * get an explicit, distinct response, so clicking this never feels like
+ * it did nothing. */
+function CheckResultStatus({ result }: { result: OutdatedCheckResult | null }) {
+  if (!result) return null
+  if (result.status === 'not-applicable') {
+    return <span style={{ fontSize: 10.5, color: 'var(--text-muted)', textAlign: 'center' }}>No automatic checks apply to this document type.</span>
+  }
+  if (result.status === 'unparseable') {
+    return (
+      <span style={{ fontSize: 10.5, color: 'var(--text-muted)', textAlign: 'center' }}>
+        Couldn't verify "{result.fieldLabel}" as a date (expected dd/mm/yyyy) — check its format.
+      </span>
+    )
+  }
+  if (result.status === 'ok') {
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, color: 'var(--success)' }}>
+        <Check size={11} />
+        "{result.fieldLabel}" looks fine ({result.daysOld} day{result.daysOld === 1 ? '' : 's'} old).
+      </span>
+    )
+  }
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--danger)' }}>
+      <AlertTriangle size={11} />
+      Flagged — see the warning above.
+    </span>
   )
 }
 
@@ -58,9 +138,11 @@ function SectionTitle({ children, action }: { children: React.ReactNode; action?
 function FieldsSection({
   section,
   onFieldChange,
+  checkResult,
 }: {
   section: Extract<OcrSection, { kind: 'fields' }>
   onFieldChange: (fieldIndex: number, value: string) => void
+  checkResult: OutdatedCheckResult | null
 }) {
   return (
     <div>
@@ -69,40 +151,72 @@ function FieldsSection({
         {section.fields.map((field, fIdx) => {
           const hasSuggestions = !!field.validationOptions?.length
           const datalistId = hasSuggestions ? `ocr-field-options-${field.rowIndex}` : undefined
+          // Only ever set when the LAST "Submit OCR corrections" click
+          // actually flagged THIS field — see usePortal.ts's
+          // confirmOcrFields. Never shown for a field the check merely
+          // looked at and found fine (that's the neutral/ok line at the
+          // bottom of the whole panel instead, not a per-field banner).
+          const flagged = checkResult?.status === 'outdated' && checkResult.fieldLabel === field.label ? checkResult : null
           return (
-            <div key={fIdx} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5, width: 124, flexShrink: 0 }}>
-                <span style={{ fontSize: 10.5, color: 'var(--text-secondary)' }}>{field.label}</span>
-                {field.remark && field.remark.toLowerCase() !== 'ok' && !field.remark.toLowerCase().endsWith(' ok') && (
-                  <span title={field.remark} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9.5, fontWeight: 600, color: 'var(--warning)' }}>
-                    <AlertTriangle size={11} />
-                  </span>
-                )}
+            <div key={fIdx} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 5, width: 124, flexShrink: 0 }}>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-secondary)' }}>{field.label}</span>
+                  {field.remark && field.remark.toLowerCase() !== 'ok' && !field.remark.toLowerCase().endsWith(' ok') && (
+                    <span title={field.remark} style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 9.5, fontWeight: 600, color: 'var(--warning)' }}>
+                      <AlertTriangle size={11} />
+                    </span>
+                  )}
+                  {hasSuggestions && (
+                    <span
+                      title={`${field.validationOptions!.length} suggestion${field.validationOptions!.length === 1 ? '' : 's'} read live from this cell's dropdown in the sheet — still a free-text field, so a value that doesn't match any of them stays as-is.`}
+                      style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--accent)', cursor: 'help' }}
+                    >
+                      ▾ SHEET
+                    </span>
+                  )}
+                </div>
+                {/* Suggestions, not a locked choice — a plain text input with
+                    an optional <datalist>, so an OCR value that doesn't match
+                    any live option is never blocked or silently reset (see
+                    OcrField.validationOptions and attachFieldValidation). */}
+                <input
+                  list={datalistId}
+                  value={field.value}
+                  onChange={(e) => onFieldChange(fIdx, e.target.value)}
+                  style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0, ...(flagged ? { borderColor: 'var(--danger)' } : undefined) }}
+                />
                 {hasSuggestions && (
-                  <span
-                    title={`${field.validationOptions!.length} suggestion${field.validationOptions!.length === 1 ? '' : 's'} read live from this cell's dropdown in the sheet — still a free-text field, so a value that doesn't match any of them stays as-is.`}
-                    style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--accent)', cursor: 'help' }}
-                  >
-                    ▾ SHEET
-                  </span>
+                  <datalist id={datalistId}>
+                    {field.validationOptions!.map((opt) => (
+                      <option key={opt} value={opt} />
+                    ))}
+                  </datalist>
                 )}
               </div>
-              {/* Suggestions, not a locked choice — a plain text input with
-                  an optional <datalist>, so an OCR value that doesn't match
-                  any live option is never blocked or silently reset (see
-                  OcrField.validationOptions and attachFieldValidation). */}
-              <input
-                list={datalistId}
-                value={field.value}
-                onChange={(e) => onFieldChange(fIdx, e.target.value)}
-                style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0 }}
-              />
-              {hasSuggestions && (
-                <datalist id={datalistId}>
-                  {field.validationOptions!.map((opt) => (
-                    <option key={opt} value={opt} />
-                  ))}
-                </datalist>
+              {/* The one place this app shows a rule-check result right
+                  next to the field it's actually about, per explicit
+                  direction ("show a warning near the field for
+                  reviewers") — not just as a generic banner elsewhere on
+                  the page. */}
+              {flagged && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 6,
+                    marginLeft: 134,
+                    padding: '6px 9px',
+                    borderRadius: 6,
+                    background: 'var(--danger-tint)',
+                    color: 'var(--danger)',
+                    fontSize: 10.5,
+                    fontWeight: 500,
+                  }}
+                >
+                  <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+                  {flagged.message}
+                </div>
               )}
             </div>
           )

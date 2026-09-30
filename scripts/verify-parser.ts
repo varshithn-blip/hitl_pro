@@ -10,6 +10,7 @@ import { extractDriveFileId } from '../src/lib/driveApi'
 import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseMasterRow, parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
+import { checkOutdatedDocument, daysSince, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy } from '../src/lib/ruleChecks'
 import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
 
@@ -272,6 +273,57 @@ console.log('\n=== parseMasterRow (smart-chip Image URL/Drive Link resolution) =
 
   if (fail > 0) {
     console.log(`\n${fail} parseMasterRow smart-chip case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// Sanity check for ruleChecks.ts's date parsing/comparison and the one
+// automatic rule check this app currently has ("is this document
+// outdated?", per explicit direction — payslip's Salary Period End Date,
+// coe's Document Issued Date, both against a 60-day threshold). Uses a
+// fixed `today` reference throughout so this doesn't depend on the
+// actual date the suite happens to run on.
+console.log('\n=== ruleChecks (parseDdMmYyyy / checkOutdatedDocument) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  const d1 = parseDdMmYyyy('17/07/2026')
+  ok(d1?.getUTCFullYear() === 2026 && d1?.getUTCMonth() === 6 && d1?.getUTCDate() === 17, 'parses "17/07/2026" as 17 July 2026 (dd/mm/yyyy, not mm/dd)')
+  ok(parseDdMmYyyy("'17/07/2026") !== null, 'tolerates a leading force-text apostrophe (see forceTextIfDateOrNumeric)')
+  ok(parseDdMmYyyy('31/02/2026') === null, "rejects a nonsense date (31 Feb) instead of letting it roll over into March")
+  ok(parseDdMmYyyy('2026-07-17') === null, "rejects yyyy-mm-dd - not this app's convention")
+  ok(parseDdMmYyyy('') === null, 'rejects a blank value')
+
+  ok(daysSince(new Date(Date.UTC(2026, 6, 1)), new Date(Date.UTC(2026, 6, 31))) === 30, 'daysSince counts whole days correctly (1 Jul -> 31 Jul = 30)')
+
+  const today = new Date(Date.UTC(2026, 8, 30)) // fixed "today" for every case below: 30 Sep 2026
+
+  const outdatedPayslip: OcrSection[] = [{ kind: 'fields', title: '', fields: [{ label: 'Salary Period End Date', value: '17/07/2026', rowIndex: 1 }] }]
+  const r1 = checkOutdatedDocument('payslip', outdatedPayslip, today)
+  ok(r1.status === 'outdated' && r1.fieldLabel === 'Salary Period End Date', `payslip with a 75-day-old Salary Period End Date is flagged outdated - got ${JSON.stringify(r1)}`)
+  if (r1.status === 'outdated') ok(r1.message.includes(OUTDATED_DOCUMENT_REASON), "the outdated result's message names the exact rejection reason it writes")
+
+  const freshPayslip: OcrSection[] = [{ kind: 'fields', title: '', fields: [{ label: 'Salary Period End Date', value: '15/09/2026', rowIndex: 1 }] }]
+  const r2 = checkOutdatedDocument('payslip', freshPayslip, today)
+  ok(r2.status === 'ok', `payslip with a 15-day-old Salary Period End Date is NOT flagged - got ${JSON.stringify(r2)}`)
+
+  const outdatedCoe: OcrSection[] = [{ kind: 'fields', title: '', fields: [{ label: 'Document Issued Date', value: '17/07/2026', rowIndex: 1 }] }]
+  const r3 = checkOutdatedDocument('coe', outdatedCoe, today)
+  ok(r3.status === 'outdated' && r3.fieldLabel === 'Document Issued Date', `coe with a 75-day-old Document Issued Date is flagged outdated - got ${JSON.stringify(r3)}`)
+
+  const r4 = checkOutdatedDocument('loan', outdatedCoe, today)
+  ok(r4.status === 'not-applicable', `loan has no outdated-document rule (yet) - got ${JSON.stringify(r4)}`)
+
+  const noDateField: OcrSection[] = [{ kind: 'fields', title: '', fields: [{ label: 'Employee Name', value: 'Someone', rowIndex: 1 }] }]
+  const r5 = checkOutdatedDocument('payslip', noDateField, today)
+  ok(r5.status === 'unparseable', `payslip missing its Salary Period End Date field comes back unparseable, not a crash - got ${JSON.stringify(r5)}`)
+
+  if (fail > 0) {
+    console.log(`\n${fail} ruleChecks case(s) failed.`)
     process.exitCode = 1
   }
 }

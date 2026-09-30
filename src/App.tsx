@@ -84,6 +84,8 @@ export default function App() {
                         onTableCellChange={p.editTableCell}
                         onAddTableRow={p.addTableRow}
                         onRemoveTableRow={p.removeTableRow}
+                        checkResult={p.ocrCheckResult}
+                        onConfirmOcr={p.confirmOcrFields}
                       />
                     )
                   ) : (

@@ -5,6 +5,7 @@ import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAu
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
+import { checkOutdatedDocument, OUTDATED_DOCUMENT_REASON, type OutdatedCheckResult } from '../lib/ruleChecks'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
 import { baseDocType, loadCachedTaxonomy, mergeTaxonomy, saveCachedTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, masterRowKey, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
@@ -63,6 +64,15 @@ export function usePortal() {
   const [draftSections, setDraftSections] = useState<OcrSection[] | null>(null)
   const [decisionDraft, setDecisionDraft] = useState<DecisionDraft>(EMPTY_DRAFT)
   const [loadingDoc, setLoadingDoc] = useState(false)
+  /** Result of the last "Submit OCR corrections" click (see
+   * `confirmOcrFields` below) — null until the reviewer has clicked it
+   * at least once for the current document, or once they've edited
+   * anything since the last click (the result is now stale — see
+   * `editField`/`editTableCell`). Deliberately NOT run automatically on
+   * every OCR load/edit: the whole point is to check the reviewer's own
+   * corrected values, never a possibly-misread raw OCR date, so this
+   * only ever updates from an explicit click. */
+  const [ocrCheckResult, setOcrCheckResult] = useState<OutdatedCheckResult | null>(null)
 
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const [imagePreviewType, setImagePreviewType] = useState<string | null>(null)
@@ -261,6 +271,7 @@ export function usePortal() {
   useEffect(() => {
     setCurrentDoc(null)
     setDraftSections(null)
+    setOcrCheckResult(null)
 
     if (!selectedRow) {
       setDecisionDraft(EMPTY_DRAFT)
@@ -508,6 +519,12 @@ export function usePortal() {
   }, [])
 
   // --- OCR field/table edit handlers ------------------------------------
+  // Every one of these also clears ocrCheckResult: any edit means the
+  // last "Submit OCR corrections" result (see confirmOcrFields below) no
+  // longer reflects what's actually in the draft, so the inline warning
+  // (and the button's status line) disappear until the reviewer clicks
+  // it again — never leaving a stale check displayed against values that
+  // have since changed.
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {
     setDraftSections((prev) => {
       if (!prev) return prev
@@ -516,6 +533,7 @@ export function usePortal() {
       if (section.kind === 'fields') section.fields[fieldIndex].value = value
       return next
     })
+    setOcrCheckResult(null)
   }, [])
 
   const editTableCell = useCallback((sectionIndex: number, rowIndex: number, colIndex: number, value: string) => {
@@ -529,6 +547,7 @@ export function usePortal() {
       }
       return next
     })
+    setOcrCheckResult(null)
   }, [])
 
   const addTableRow = useCallback((sectionIndex: number) => {
@@ -542,6 +561,7 @@ export function usePortal() {
       }
       return next
     })
+    setOcrCheckResult(null)
   }, [])
 
   const removeTableRow = useCallback((sectionIndex: number, rowIndex: number) => {
@@ -552,7 +572,39 @@ export function usePortal() {
       if (section.kind === 'table') section.rows = section.rows.filter((r) => r.rowIndex !== rowIndex)
       return next
     })
+    setOcrCheckResult(null)
   }, [])
+
+  // --- "Submit OCR corrections" (the button at the end of the OCR editor) ---
+  // Deliberately a separate, purely local action from the real `submit`
+  // below — it never talks to Sheets, it only runs the rule check(s)
+  // against whatever the reviewer has corrected the OCR fields to be.
+  // Per explicit direction: this exists specifically so a rule like
+  // "flag as outdated" never fires against a raw, possibly-misread OCR
+  // date — only once the reviewer has confirmed (by clicking this) that
+  // the fields are actually correct.
+  const confirmOcrFields = useCallback(() => {
+    if (!selectedRow || !draftSections) return
+    const docType = baseDocType(selectedRow.documentType)
+    const result = checkOutdatedDocument(docType, draftSections)
+    setOcrCheckResult(result)
+
+    if (result.status === 'outdated') {
+      setDecisionDraft((prev) => ({ ...prev, rejectionReason: OUTDATED_DOCUMENT_REASON, category: 'Invalid', status: 'Manually Rejected' }))
+    } else {
+      // Undo exactly what a PRIOR confirm on this same document may have
+      // set — but only if nothing has touched those three fields since
+      // (an exact match against what the rule itself writes). A reviewer
+      // fixing the flagged date and re-confirming should un-flag it;
+      // a reviewer who manually picked a different category/reason in
+      // between must never have that choice silently overwritten here.
+      setDecisionDraft((prev) =>
+        prev.rejectionReason === OUTDATED_DOCUMENT_REASON && prev.category === 'Invalid' && prev.status === 'Manually Rejected'
+          ? { ...prev, rejectionReason: '', category: '', status: '' }
+          : prev,
+      )
+    }
+  }, [selectedRow, draftSections])
 
   // --- Submit -------------------------------------------------------------
   const submit = useCallback(async () => {
@@ -661,6 +713,8 @@ export function usePortal() {
     editTableCell,
     addTableRow,
     removeTableRow,
+    ocrCheckResult,
+    confirmOcrFields,
 
     submit,
     syncState,
