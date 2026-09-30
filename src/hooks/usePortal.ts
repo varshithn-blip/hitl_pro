@@ -5,8 +5,17 @@ import { getStoredUser, signIn, signOut, type AuthedUser } from '../lib/googleAu
 import { MOCK_DATE_TABS, MOCK_MASTER_ROWS, MOCK_OCR_DOCS } from '../lib/mockData'
 import { buildDecisionUpdates, fetchMasterRows, isDateTabTitle, readLiveTaxonomy, parseSheetUrlHref, type MasterRowsLoadProgress } from '../lib/masterSheet'
 import { attachFieldValidation, buildFieldEdits, buildOcrCellUpdates, buildTableEdits, parseOcrRows } from '../lib/ocrParser'
-import { computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR, PAYSLIP_DATE_FIELDS, PAYSLIP_SALARY_FIELDS, type PayslipCalculatorInputs } from '../lib/payslipCalc'
-import { checkOutdatedDocument, OUTDATED_DOCUMENT_REASON, type OutdatedCheckResult } from '../lib/ruleChecks'
+import {
+  checkNetPayConsistency,
+  computePayslipAutoFields,
+  EMPTY_PAYSLIP_CALCULATOR,
+  PAYSLIP_DATE_FIELDS,
+  PAYSLIP_SALARY_FIELDS,
+  TOTAL_INCONSISTENT_FRAUD_REASON,
+  type NetPayConsistencyResult,
+  type PayslipCalculatorInputs,
+} from '../lib/payslipCalc'
+import { checkOutdatedDocument, findField, OUTDATED_DOCUMENT_REASON, type OutdatedCheckResult } from '../lib/ruleChecks'
 import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
 import { baseDocType, loadCachedTaxonomy, mergeTaxonomy, saveCachedTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, masterRowKey, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
@@ -29,6 +38,14 @@ function seedDraft(row: MasterRow): DecisionDraft {
   }
 }
 
+/** What one "Submit OCR corrections" click produces — both independent
+ * checks it runs, bundled together so OcrEditor's click handler can
+ * decide in one place what to do next (scroll to a flagged field, or
+ * move on to Decision) — see `confirmOcrFields`'s own comments below. */
+export interface ConfirmOcrResult {
+  outdated: OutdatedCheckResult
+  netPay: NetPayConsistencyResult
+}
 
 type SyncState = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -74,6 +91,18 @@ export function usePortal() {
    * corrected values, never a possibly-misread raw OCR date, so this
    * only ever updates from an explicit click. */
   const [ocrCheckResult, setOcrCheckResult] = useState<OutdatedCheckResult | null>(null)
+  /** Result of the last "Submit OCR corrections" click's Net Pay
+   * declared-vs-calculated comparison (Payslip only) — same lifecycle as
+   * `ocrCheckResult` above (null until clicked, or once edited since —
+   * see the edit handlers below), but tracked separately since the two
+   * checks are independent and both can be non-null at once. */
+  const [netPayCheckResult, setNetPayCheckResult] = useState<NetPayConsistencyResult | null>(null)
+  /** The calculator's own reference Net Pay figure — kept LIVE (recomputed
+   * on every relevant change, not just on Submit) so OcrEditor can show it
+   * next to the real "Net Salary" field for the reviewer to compare by eye
+   * at any time, before ever clicking Submit. See the payslip auto-calc
+   * effect below, which is also where this gets (re)computed. */
+  const [payslipCalculatedNetPay, setPayslipCalculatedNetPay] = useState<string | null>(null)
   /** Portal-only inputs for the Payslip "Salary Calculator" (Taxable/
    * Non-Taxable Income, Deduction, plus a convenience sum for SSS/
    * PhilHealth Premium) — see payslipCalc.ts. Deliberately kept
@@ -283,6 +312,8 @@ export function usePortal() {
     setCurrentDoc(null)
     setDraftSections(null)
     setOcrCheckResult(null)
+    setNetPayCheckResult(null)
+    setPayslipCalculatedNetPay(null)
     setPayslipCalculator(EMPTY_PAYSLIP_CALCULATOR)
 
     if (!selectedRow) {
@@ -531,12 +562,12 @@ export function usePortal() {
   }, [])
 
   // --- OCR field/table edit handlers ------------------------------------
-  // Every one of these also clears ocrCheckResult: any edit means the
-  // last "Submit OCR corrections" result (see confirmOcrFields below) no
-  // longer reflects what's actually in the draft, so the inline warning
-  // (and the button's status line) disappear until the reviewer clicks
-  // it again — never leaving a stale check displayed against values that
-  // have since changed.
+  // Every one of these also clears ocrCheckResult AND netPayCheckResult:
+  // any edit means the last "Submit OCR corrections" results (see
+  // confirmOcrFields below) no longer reflect what's actually in the
+  // draft, so the inline warnings (and the button's status lines)
+  // disappear until the reviewer clicks it again — never leaving a stale
+  // check displayed against values that have since changed.
   const editField = useCallback((sectionIndex: number, fieldIndex: number, value: string) => {
     setDraftSections((prev) => {
       if (!prev) return prev
@@ -546,6 +577,7 @@ export function usePortal() {
       return next
     })
     setOcrCheckResult(null)
+    setNetPayCheckResult(null)
   }, [])
 
   const editTableCell = useCallback((sectionIndex: number, rowIndex: number, colIndex: number, value: string) => {
@@ -560,6 +592,7 @@ export function usePortal() {
       return next
     })
     setOcrCheckResult(null)
+    setNetPayCheckResult(null)
   }, [])
 
   const addTableRow = useCallback((sectionIndex: number) => {
@@ -574,6 +607,7 @@ export function usePortal() {
       return next
     })
     setOcrCheckResult(null)
+    setNetPayCheckResult(null)
   }, [])
 
   const removeTableRow = useCallback((sectionIndex: number, rowIndex: number) => {
@@ -585,6 +619,7 @@ export function usePortal() {
       return next
     })
     setOcrCheckResult(null)
+    setNetPayCheckResult(null)
   }, [])
 
   // --- "Submit OCR corrections" (the button at the end of the OCR editor) ---
@@ -596,15 +631,16 @@ export function usePortal() {
   // date — only once the reviewer has confirmed (by clicking this) that
   // the fields are actually correct.
   //
-  // Returns the freshly computed result (in addition to storing it in
-  // state) so the caller — OcrEditor's click handler — can react to it
-  // immediately: scroll to the flagged field, or move on to the Decision
-  // tab, in the very same click rather than via a separate effect. An
-  // effect watching `ocrCheckResult` would re-fire every time OcrEditor
-  // remounts (e.g. the reviewer switches back to the OCR tab after this
-  // already navigated them to Decision), which would bounce them right
-  // back — a one-shot return value avoids that entirely.
-  const confirmOcrFields = useCallback((): OutdatedCheckResult | null => {
+  // Returns both checks' freshly computed results (in addition to
+  // storing them in state) so the caller — OcrEditor's click handler —
+  // can react immediately: scroll to whichever field needs attention, or
+  // move on to the Decision tab, in the very same click rather than via
+  // a separate effect. An effect watching the stored results would
+  // re-fire every time OcrEditor remounts (e.g. the reviewer switches
+  // back to the OCR tab after this already navigated them to Decision),
+  // which would bounce them right back — a one-shot return value avoids
+  // that entirely.
+  const confirmOcrFields = useCallback((): ConfirmOcrResult | null => {
     if (!selectedRow || !draftSections) return null
     const docType = baseDocType(selectedRow.documentType)
     const result = checkOutdatedDocument(docType, draftSections)
@@ -625,8 +661,30 @@ export function usePortal() {
           : prev,
       )
     }
-    return result
-  }, [selectedRow, draftSections])
+
+    // Net Pay declared-vs-calculated check (Payslip only) — a soft
+    // signal, never a rejection, per explicit direction: a mismatch only
+    // ever adds a Fraud Reason, it never touches Category/Status the way
+    // the outdated-document check above does.
+    const netPayResult = checkNetPayConsistency(docType, draftSections, payslipCalculator)
+    setNetPayCheckResult(netPayResult)
+    if (netPayResult.status === 'mismatch') {
+      setDecisionDraft((prev) =>
+        prev.fraudReason.includes(TOTAL_INCONSISTENT_FRAUD_REASON) ? prev : { ...prev, fraudReason: [...prev.fraudReason, TOTAL_INCONSISTENT_FRAUD_REASON] },
+      )
+    } else if (netPayResult.status === 'match') {
+      // Symmetric revert, same rule as the outdated-document check above:
+      // only remove the tag this rule itself would have added, never
+      // touch any other fraud reason the reviewer picked themselves.
+      setDecisionDraft((prev) =>
+        prev.fraudReason.includes(TOTAL_INCONSISTENT_FRAUD_REASON)
+          ? { ...prev, fraudReason: prev.fraudReason.filter((r) => r !== TOTAL_INCONSISTENT_FRAUD_REASON) }
+          : prev,
+      )
+    }
+
+    return { outdated: result, netPay: netPayResult }
+  }, [selectedRow, draftSections, payslipCalculator])
 
   const setPayslipCalculatorExpr = useCallback((field: keyof PayslipCalculatorInputs, value: string) => {
     setPayslipCalculator((prev) => ({ ...prev, [field]: value }))
@@ -662,34 +720,34 @@ export function usePortal() {
 
   // --- Payslip auto-calculated fields -----------------------------------
   // Per explicit direction: Duration is derived from Salary Period
-  // Start/End Date; Gross Salary/Net Salary/SSS Premium/PhilHealth
-  // Premium are derived from the portal-only calculator above. Re-
-  // derives from CURRENT state on every relevant change — however it
+  // Start/End Date; Gross Salary/SSS Premium/PhilHealth Premium are
+  // derived from the portal-only calculator above and written into their
+  // real fields. Net Salary is deliberately NOT written here — the real
+  // field keeps whatever the document declares ("declared"); this effect
+  // only keeps `payslipCalculatedNetPay` (a live, portal-only reference
+  // figure) up to date for OcrEditor to show alongside it — see
+  // `checkNetPayConsistency` for where the two actually get compared
+  // (only on a "Submit OCR corrections" click, not here).
+  //
+  // Re-derives from CURRENT state on every relevant change — however it
   // happened (typing in a date field, typing in the calculator, the
   // initial OCR load) — rather than hooking into individual handlers,
   // so it can never fall out of sync with what's actually on screen.
-  // Every field stays independently editable by hand regardless: typing
-  // directly into e.g. Duration sticks until its OWN source (the two
-  // date fields) changes again, at which point it's recomputed.
+  // Every synced field stays independently editable by hand regardless:
+  // typing directly into e.g. Duration sticks until its OWN source (the
+  // two date fields) changes again, at which point it's recomputed.
   useEffect(() => {
     if (!selectedRow || !draftSections) return
     if (baseDocType(selectedRow.documentType) !== 'payslip') return
 
-    const findValue = (label: string): string | null => {
-      for (const section of draftSections) {
-        if (section.kind !== 'fields') continue
-        const field = section.fields.find((f) => f.label === label)
-        if (field) return field.value
-      }
-      return null
-    }
+    const findValue = (label: string): string | null => findField(draftSections, label)?.value ?? null
 
     const auto = computePayslipAutoFields(findValue(PAYSLIP_DATE_FIELDS.start), findValue(PAYSLIP_DATE_FIELDS.end), payslipCalculator)
     syncComputedField(PAYSLIP_DATE_FIELDS.duration, auto.duration)
     syncComputedField(PAYSLIP_SALARY_FIELDS.grossSalary, auto.grossSalary)
-    syncComputedField(PAYSLIP_SALARY_FIELDS.netSalary, auto.netSalary)
     syncComputedField(PAYSLIP_SALARY_FIELDS.sssPremium, auto.sssPremium)
     syncComputedField(PAYSLIP_SALARY_FIELDS.philHealthPremium, auto.philHealthPremium)
+    setPayslipCalculatedNetPay(auto.calculatedNetPay)
   }, [selectedRow, draftSections, payslipCalculator, syncComputedField])
 
   // --- Submit -------------------------------------------------------------
@@ -800,6 +858,8 @@ export function usePortal() {
     addTableRow,
     removeTableRow,
     ocrCheckResult,
+    netPayCheckResult,
+    payslipCalculatedNetPay,
     confirmOcrFields,
     payslipCalculator,
     setPayslipCalculatorExpr,

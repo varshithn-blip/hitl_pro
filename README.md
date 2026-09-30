@@ -226,25 +226,31 @@ real and clickable — only the data source is fake.
   the "outdated" path was exercised against a real date comparison, not
   only a synthetic one.
   - **What happens right after the click** (per explicit direction — the
-    button's effect wasn't obvious enough before this): if the field a
-    check actually looked at needs the reviewer's attention — flagged as
-    outdated, or a date this couldn't even parse — the OCR panel
-    smooth-scrolls straight to that field's warning so it's on screen
-    without the reviewer having to go looking for it, and stays on the
-    OCR tab so they can either fix it and re-submit or leave the flag as
-    correct and move on themselves. Anything else — a clean check, or a
-    document type this rule doesn't apply to — has nothing left to look
-    at here, so it switches the panel to the Decision tab automatically.
-    `confirmOcrFields` (`usePortal.ts`) returns the check result it just
-    computed so `OcrEditor`'s click handler can act on it in the same
-    click, rather than a separate effect watching for the result to
-    change — an effect keyed off the result would re-fire every time the
-    OCR tab remounts (e.g. the reviewer switching back to it after being
-    moved to Decision), which would bounce them straight back. Verified
-    via Playwright: the outdated-coe case scrolls the flagged field into
-    the actual viewport (not just present somewhere off-screen) and
-    stays on OCR, a clean payslip case switches straight to Decision, and
-    fixing the flagged date and re-submitting also switches to Decision.
+    button's effect wasn't obvious enough before this): if either check
+    this button runs needs the reviewer's attention — the outdated-
+    document check (flagged, or a date this couldn't even parse), or the
+    Payslip-only Net Pay declared-vs-calculated check below (a mismatch)
+    — the OCR panel smooth-scrolls straight to that field's warning so
+    it's on screen without the reviewer having to go looking for it, and
+    stays on the OCR tab so they can either fix it and re-submit or leave
+    the flag as correct and move on themselves. The outdated-document
+    check takes priority when both fire on the same click (a more
+    foundational problem). Anything else — both checks clean, or a
+    document type neither applies to — has nothing left to look at here,
+    so it switches the panel to the Decision tab automatically.
+    `confirmOcrFields` (`usePortal.ts`) returns both check results it
+    just computed (`ConfirmOcrResult`) so `OcrEditor`'s click handler can
+    act on them in the same click, rather than a separate effect watching
+    for the results to change — an effect keyed off them would re-fire
+    every time the OCR tab remounts (e.g. the reviewer switching back to
+    it after being moved to Decision), which would bounce them straight
+    back. Verified via Playwright: the outdated-coe case scrolls the
+    flagged field into the actual viewport (not just present somewhere
+    off-screen) and stays on OCR, a clean payslip case switches straight
+    to Decision, fixing the flagged date and re-submitting also switches
+    to Decision, and (see the Net Pay check below) a genuine Net Salary
+    mismatch scrolls to that field too instead of silently switching tabs
+    with an unnoticed Fraud Reason added.
 - **Payslip auto-calculated fields** (`lib/payslipCalc.ts`,
   `lib/calculator.ts`) — Payslip-only, per explicit direction:
   - **Duration** recomputes automatically from Salary Period Start/End
@@ -253,16 +259,46 @@ real and clickable — only the data source is fake.
     changes, however that happened (typing directly, or via the OCR
     load itself). Still a normal editable field — typing over it
     sticks until one of the two dates changes again.
-  - **Gross Salary = Taxable Income + Non-Taxable Income; Net Salary =
-    Gross Salary − Deduction.** Taxable Income, Non-Taxable Income, and
-    Deduction are **brand new fields that exist only in this portal** —
-    per explicit direction, they're never written to the real OCR
-    sheet. That's a structural guarantee, not a runtime check: they
-    live in their own `payslipCalculator` state in `usePortal.ts`,
-    completely separate from `draftSections`/`OcrSection` — the one
-    data structure `buildFieldEdits` ever diffs to build a Sheets write,
-    so there is no code path that could leak them into it even by
-    accident.
+  - **Gross Salary = Taxable Income + Non-Taxable Income.** Taxable
+    Income, Non-Taxable Income, and Deduction are **brand new fields
+    that exist only in this portal** — per explicit direction, they're
+    never written to the real OCR sheet. That's a structural guarantee,
+    not a runtime check: they live in their own `payslipCalculator`
+    state in `usePortal.ts`, completely separate from
+    `draftSections`/`OcrSection` — the one data structure
+    `buildFieldEdits` ever diffs to build a Sheets write, so there is no
+    code path that could leak them into it even by accident.
+  - **Net Salary stays exactly as OCR'd/declared — it is never
+    overwritten**, per explicit direction ("generally net pay is
+    already present from the OCR, we can keep that as declared"). A
+    second, portal-only figure — **Calculated: Gross Salary − Deduction**
+    — is shown directly under the real field instead, purely as a
+    reference for the reviewer to compare by eye; it carries a
+    "DECLARED" badge on the real field itself so it's visually distinct
+    from the "⟳ AUTO" fields nearby.
+  - **Declared-vs-calculated Net Pay check** (`checkNetPayConsistency`
+    in `lib/payslipCalc.ts`) — like the outdated-document check, this
+    only ever runs on a "Submit OCR corrections" click, against the
+    reviewer's own corrected values. If the declared Net Salary and the
+    calculated figure don't match (beyond a one-cent rounding
+    tolerance), **"Total Inconsistent" is auto-added to Fraud Reason**
+    — per explicit direction, this is a soft signal only: Category and
+    Status are left completely untouched, unlike the outdated-document
+    check (**no auto-rejection**). A later re-check that comes back
+    matching removes "Total Inconsistent" again, but only if it's still
+    exactly the tag this rule itself added — any other fraud reason the
+    reviewer picked separately is left alone, same symmetric-revert
+    rule as the outdated-document check. Nothing is compared until the
+    reviewer has actually used the calculator (an untouched calculator
+    never produces a false mismatch) or the declared field is blank/
+    non-numeric — both come back `unavailable`, not a false flag.
+    "Submit OCR corrections" treats a mismatch the same as an outdated-
+    document flag: it scrolls the OCR panel to the Net Salary field and
+    keeps the reviewer on the OCR tab (instead of auto-advancing to
+    Decision) precisely because this auto-adds a Fraud Reason tucked
+    inside a popover on the Decision tab — silently landing there
+    without ever having seen why would defeat the whole point of that
+    button's UX (see the entry above on scrolling to a flagged field).
   - **A "calculator" convenience on five fields** — Taxable Income,
     Non-Taxable Income, Deduction (the three new ones above), plus the
     two real fields **SSS Premium** and **PhilHealth Premium** — per
@@ -276,21 +312,27 @@ real and clickable — only the data source is fake.
     fields). An untouched calculator field never overwrites a real,
     OCR-extracted value with a guessed zero — Gross Salary only starts
     computing once the reviewer has used Taxable or Non-Taxable Income
-    at least once, and Net Salary only once Gross is computing too
-    (Deduction alone, with neither income field touched, has nothing to
-    subtract from and is left alone).
-  - Every auto-calculated real field (Duration, Gross Salary, Net
-    Salary, SSS Premium, PhilHealth Premium) carries a small "⟳ AUTO"
-    badge next to its label, so it's visually clear why it might change
-    on its own — same visual language as the existing "▾ SHEET"/
-    "FALLBACK LIST" source badges elsewhere in this panel.
+    at least once, and the calculated Net Pay reference only once Gross
+    is computing too (Deduction alone, with neither income field
+    touched, has nothing to subtract from and is left alone).
+  - Every auto-calculated real field (Duration, Gross Salary, SSS
+    Premium, PhilHealth Premium) carries a small "⟳ AUTO" badge next to
+    its label, so it's visually clear why it might change on its own —
+    same visual language as the existing "▾ SHEET"/"FALLBACK LIST"
+    source badges elsewhere in this panel. Net Salary is deliberately
+    NOT in this set (see above).
   - Covered by regression cases in `verify:parser` (the expression
     evaluator's arithmetic/edge cases, Duration's exact fixture-matched
-    day count, and the Gross/Net activation rules) and confirmed
-    end-to-end via Playwright against demo mode: editing Salary Period
-    End Date live-recomputes Duration, and filling in the calculator
-    fields correctly drives Gross Salary/Net Salary while leaving an
-    untouched PhilHealth Premium exactly as OCR left it.
+    day count, the Gross/calculated-Net activation rules, and
+    `checkNetPayConsistency`'s not-applicable/unavailable/match/mismatch
+    paths) and confirmed end-to-end via Playwright against demo mode:
+    editing Salary Period End Date live-recomputes Duration, filling in
+    the calculator fields correctly drives Gross Salary while leaving an
+    untouched PhilHealth Premium exactly as OCR left it, Net Salary
+    stays at its declared value throughout, a genuine mismatch scrolls
+    to it and adds "Total Inconsistent" without touching Category/
+    Status, and fixing the calculator to match removes that tag again
+    and advances to Decision.
 - **Decision panel** — OCR details is still the tab that opens by
   default when a document is selected (correcting fields comes before
   deciding); a brief change to default to Decision instead — reasoning

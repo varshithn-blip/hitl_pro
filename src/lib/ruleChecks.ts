@@ -66,7 +66,11 @@ const OUTDATED_DATE_FIELD_BY_DOC_TYPE: Record<string, string> = {
   coe: 'Document Issued Date',
 }
 
-function findField(sections: OcrSection[], label: string): OcrField | null {
+/** Exported for reuse anywhere else that needs to look up one field's
+ * current value by label — usePortal.ts's payslip auto-calc effect and
+ * payslipCalc.ts's `checkNetPayConsistency` both share this instead of
+ * repeating the same section-scan. */
+export function findField(sections: OcrSection[], label: string): OcrField | null {
   for (const section of sections) {
     if (section.kind !== 'fields') continue
     const match = section.fields.find((f) => f.label === label)

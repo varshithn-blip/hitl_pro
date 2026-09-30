@@ -11,7 +11,7 @@ import { extractDriveFileId } from '../src/lib/driveApi'
 import { attachFieldValidation, buildFieldEdits, forceTextIfDateOrNumeric, parseOcrRows } from '../src/lib/ocrParser'
 import { parseMasterRow, parseRejectionReasonRefRows } from '../src/lib/masterSheet'
 import { MOCK_OCR_DOCS } from '../src/lib/mockData'
-import { computeDurationDays, computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR } from '../src/lib/payslipCalc'
+import { checkNetPayConsistency, computeDurationDays, computePayslipAutoFields, EMPTY_PAYSLIP_CALCULATOR } from '../src/lib/payslipCalc'
 import { checkOutdatedDocument, daysSince, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy } from '../src/lib/ruleChecks'
 import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
@@ -385,12 +385,12 @@ console.log('\n=== payslipCalc (computeDurationDays / computePayslipAutoFields) 
 
   const r1 = computePayslipAutoFields('01/08/2026', '15/08/2026', EMPTY_PAYSLIP_CALCULATOR)
   ok(r1.duration === '15', `dates alone compute Duration - got ${JSON.stringify(r1)}`)
-  ok(r1.grossSalary === null && r1.netSalary === null, 'an untouched calculator never computes Gross/Net (no guessed zero)')
+  ok(r1.grossSalary === null && r1.calculatedNetPay === null, 'an untouched calculator never computes Gross/calculated-Net (no guessed zero)')
   ok(r1.sssPremium === null && r1.philHealthPremium === null, 'an untouched calculator never computes SSS/PhilHealth Premium either')
 
   const r2 = computePayslipAutoFields('01/08/2026', '15/08/2026', { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '30000' })
   ok(r2.grossSalary === '30000', `Taxable Income alone drives Gross Salary (Non-Taxable treated as 0) - got ${JSON.stringify(r2)}`)
-  ok(r2.netSalary === '30000', 'Net Salary follows Gross once Gross is active (Deduction treated as 0)')
+  ok(r2.calculatedNetPay === '30000', 'calculated Net Pay follows Gross once Gross is active (Deduction treated as 0)')
 
   const r3 = computePayslipAutoFields(null, null, {
     ...EMPTY_PAYSLIP_CALCULATOR,
@@ -399,16 +399,83 @@ console.log('\n=== payslipCalc (computeDurationDays / computePayslipAutoFields) 
     deductionExpr: '2500',
   })
   ok(r3.grossSalary === '36000', `Gross = Taxable + Non-Taxable (30000 + 6000) - got ${JSON.stringify(r3)}`)
-  ok(r3.netSalary === '33500', 'Net = Gross - Deduction (36000 - 2500)')
+  ok(r3.calculatedNetPay === '33500', 'calculated Net Pay = Gross - Deduction (36000 - 2500)')
 
   const r4 = computePayslipAutoFields(null, null, { ...EMPTY_PAYSLIP_CALCULATOR, deductionExpr: '2500' })
-  ok(r4.grossSalary === null && r4.netSalary === null, 'Deduction alone (no Taxable/Non-Taxable touched) computes neither Gross nor Net - nothing to subtract it from')
+  ok(
+    r4.grossSalary === null && r4.calculatedNetPay === null,
+    'Deduction alone (no Taxable/Non-Taxable touched) computes neither Gross nor calculated-Net - nothing to subtract it from',
+  )
 
   const r5 = computePayslipAutoFields(null, null, { ...EMPTY_PAYSLIP_CALCULATOR, sssExpr: '400+100', philHealthExpr: '250' })
   ok(r5.sssPremium === '500' && r5.philHealthPremium === '250', `SSS/PhilHealth Premium compute independently of Gross/Net - got ${JSON.stringify(r5)}`)
 
   if (fail > 0) {
     console.log(`\n${fail} payslipCalc case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// checkNetPayConsistency: the declared (real OCR) Net Salary field is
+// NEVER overwritten (see PAYSLIP_AUTO_FIELD_LABELS' own comment) - this
+// only ever compares it against the calculator's reference figure and
+// reports match/mismatch/unavailable, for usePortal.ts's confirmOcrFields
+// to turn a mismatch into a "Total Inconsistent" Fraud Reason (never a
+// rejection).
+console.log('\n=== payslipCalc (checkNetPayConsistency) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  const sectionsWithNet = (netSalaryValue: string): OcrSection[] => [
+    { kind: 'fields', title: 'Salary Details', fields: [{ label: 'Net Salary', value: netSalaryValue, rowIndex: 28 }] },
+  ]
+
+  const notPayslip = checkNetPayConsistency('coe', sectionsWithNet('40048.66'), { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '40048.66' })
+  ok(notPayslip.status === 'not-applicable', `a non-Payslip doc type is always not-applicable - got ${JSON.stringify(notPayslip)}`)
+
+  const untouchedCalculator = checkNetPayConsistency('payslip', sectionsWithNet('40048.66'), EMPTY_PAYSLIP_CALCULATOR)
+  ok(untouchedCalculator.status === 'unavailable', `an untouched calculator is unavailable, never a false mismatch - got ${JSON.stringify(untouchedCalculator)}`)
+
+  const blankDeclared = checkNetPayConsistency('payslip', sectionsWithNet(''), { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '40048.66' })
+  ok(blankDeclared.status === 'unavailable', `a blank declared Net Salary is unavailable, never a false mismatch - got ${JSON.stringify(blankDeclared)}`)
+
+  // Exact match, taken from the real payslip_0 fixture's own declared Net
+  // Salary (40048.66) - Taxable Income alone (Deduction/Non-Taxable at 0)
+  // set to that exact figure.
+  const exactMatch = checkNetPayConsistency('payslip', sectionsWithNet('40048.66'), { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '40048.66' })
+  ok(exactMatch.status === 'match', `declared === calculated is a match - got ${JSON.stringify(exactMatch)}`)
+
+  // A cent of rounding slop must not count as a mismatch.
+  const roundingSlop = checkNetPayConsistency('payslip', sectionsWithNet('40048.66'), { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '40048.665' })
+  ok(roundingSlop.status === 'match', `a sub-cent difference (rounding) still counts as a match - got ${JSON.stringify(roundingSlop)}`)
+
+  // Genuinely different figures - the calc-3-filled.png scenario from the
+  // original calculator verification pass (Taxable 25000+5000, Non-Taxable
+  // 1000, Deduction 500+250 -> calculated 30250) against that same
+  // fixture's real declared Net Salary (40048.66).
+  const mismatch = checkNetPayConsistency('payslip', sectionsWithNet('40048.66'), {
+    ...EMPTY_PAYSLIP_CALCULATOR,
+    taxableIncomeExpr: '25000+5000',
+    nonTaxableIncomeExpr: '1000',
+    deductionExpr: '500+250',
+  })
+  ok(
+    mismatch.status === 'mismatch' && mismatch.declared === 40048.66 && mismatch.calculated === 30250,
+    `a genuine difference is a mismatch, carrying both figures - got ${JSON.stringify(mismatch)}`,
+  )
+
+  const declaredWithCommaAndPrefix = checkNetPayConsistency("payslip", sectionsWithNet("'40,048.66"), { ...EMPTY_PAYSLIP_CALCULATOR, taxableIncomeExpr: '40048.66' })
+  ok(
+    declaredWithCommaAndPrefix.status === 'match',
+    `a declared value with a comma and a force-text prefix (as it comes back after a submit) still parses and matches - got ${JSON.stringify(declaredWithCommaAndPrefix)}`,
+  )
+
+  if (fail > 0) {
+    console.log(`\n${fail} checkNetPayConsistency case(s) failed.`)
     process.exitCode = 1
   }
 }

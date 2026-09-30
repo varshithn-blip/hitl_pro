@@ -85,6 +85,8 @@ export default function App() {
                         onAddTableRow={p.addTableRow}
                         onRemoveTableRow={p.removeTableRow}
                         checkResult={p.ocrCheckResult}
+                        netPayCheckResult={p.netPayCheckResult}
+                        calculatedNetPay={p.payslipCalculatedNetPay}
                         onConfirmOcr={p.confirmOcrFields}
                         onNavigateToDecision={() => setRightTab('decision')}
                         documentType={p.selectedRow.documentType}

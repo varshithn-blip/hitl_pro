@@ -1,9 +1,10 @@
 import { useRef } from 'react'
 import { evaluateExpression, formatComputed } from '../lib/calculator'
-import { PAYSLIP_AUTO_FIELD_LABELS, type PayslipCalculatorInputs } from '../lib/payslipCalc'
+import { PAYSLIP_AUTO_FIELD_LABELS, PAYSLIP_SALARY_FIELDS, type NetPayConsistencyResult, type PayslipCalculatorInputs } from '../lib/payslipCalc'
 import type { OutdatedCheckResult } from '../lib/ruleChecks'
 import { baseDocType } from '../lib/taxonomy'
 import type { OcrSection } from '../lib/types'
+import type { ConfirmOcrResult } from '../hooks/usePortal'
 import { AlertTriangle, Check, Plus, X } from './icons'
 
 interface Props {
@@ -20,11 +21,23 @@ interface Props {
    * itself, not as a generic banner disconnected from the field it's
    * about. */
   checkResult: OutdatedCheckResult | null
-  /** Runs the check and returns its result synchronously — see this
+  /** Result of the last Submit click's Net Pay declared-vs-calculated
+   * comparison (Payslip only) — same null-until-clicked-or-stale
+   * lifecycle as `checkResult`, but independent of it (see
+   * usePortal.ts's `confirmOcrFields`). Passed through to
+   * `FieldsSection` so it can show the outcome right next to the real
+   * "Net Salary" field. */
+  netPayCheckResult: NetPayConsistencyResult | null
+  /** The calculator's live reference Net Pay figure (Payslip only) —
+   * unlike `netPayCheckResult`, this updates on every calculator
+   * keystroke, not just on Submit, so the reviewer can compare it
+   * against the declared field at any time before ever clicking Submit. */
+  calculatedNetPay: string | null
+  /** Runs both checks and returns their results synchronously — see this
    * component's own submit handler below, which uses the return value
-   * (not a separate effect on `checkResult`) to decide whether to scroll
-   * to the flagged field or hand off to `onNavigateToDecision`. */
-  onConfirmOcr: () => OutdatedCheckResult | null
+   * (not a separate effect on the stored results) to decide whether to
+   * scroll to a flagged field or hand off to `onNavigateToDecision`. */
+  onConfirmOcr: () => ConfirmOcrResult | null
   /** Switches the right-hand panel to the Decision tab — lives in
    * App.tsx (that's where `rightTab` state is), passed down so a clean
    * "Submit OCR corrections" click can move the reviewer forward on its
@@ -54,6 +67,8 @@ export function OcrEditor({
   onAddTableRow,
   onRemoveTableRow,
   checkResult,
+  netPayCheckResult,
+  calculatedNetPay,
   onConfirmOcr,
   onNavigateToDecision,
   documentType,
@@ -77,14 +92,21 @@ export function OcrEditor({
   // couldn't even parse) scrolls it into view right here on the OCR tab
   // so the reviewer sees exactly what to look at, and can then either
   // fix it and re-submit or decide the flag is correct and move on
-  // themselves. Anything else — a clean check, or a document type this
-  // rule doesn't apply to — has nothing left for the reviewer to look at
-  // on this tab, so it advances them straight to Decision.
+  // themselves. A Net Pay mismatch gets the same treatment — scrolled to
+  // the real Net Salary field, since it's a fraud signal getting quietly
+  // added to a Decision-tab popover the reviewer might otherwise never
+  // notice. The outdated-document check takes priority when both fire at
+  // once (a more foundational problem — the document itself may not even
+  // be current). Anything else — both checks clean, or a document type
+  // neither applies to — has nothing left for the reviewer to look at on
+  // this tab, so it advances them straight to Decision.
   const handleConfirmOcr = () => {
     const result = onConfirmOcr()
     if (!result) return
-    if (result.status === 'outdated' || result.status === 'unparseable') {
-      fieldRefs.current.get(result.fieldLabel)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    if (result.outdated.status === 'outdated' || result.outdated.status === 'unparseable') {
+      fieldRefs.current.get(result.outdated.fieldLabel)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    } else if (result.netPay.status === 'mismatch') {
+      fieldRefs.current.get(PAYSLIP_SALARY_FIELDS.netSalary)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     } else {
       onNavigateToDecision()
     }
@@ -94,7 +116,15 @@ export function OcrEditor({
     <div className="rd-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 18 }}>
       {sections.map((section, sIdx) =>
         section.kind === 'fields' ? (
-          <FieldsSection key={sIdx} section={section} onFieldChange={(fIdx, v) => onFieldChange(sIdx, fIdx, v)} checkResult={checkResult} registerFieldRef={registerFieldRef} />
+          <FieldsSection
+            key={sIdx}
+            section={section}
+            onFieldChange={(fIdx, v) => onFieldChange(sIdx, fIdx, v)}
+            checkResult={checkResult}
+            netPayCheckResult={netPayCheckResult}
+            calculatedNetPay={calculatedNetPay}
+            registerFieldRef={registerFieldRef}
+          />
         ) : (
           <TableSection
             key={sIdx}
@@ -142,6 +172,7 @@ export function OcrEditor({
           Runs automatic checks (e.g. outdated document) against your corrected values — doesn't save anything by itself.
         </span>
         <CheckResultStatus result={checkResult} />
+        <NetPayCheckStatus result={netPayCheckResult} />
       </div>
     </div>
   )
@@ -182,6 +213,30 @@ function CheckResultStatus({ result }: { result: OutdatedCheckResult | null }) {
   )
 }
 
+/** The Net Pay check's own feedback line, alongside `CheckResultStatus`
+ * above — independent check, independent line. Silent for
+ * 'not-applicable' (non-Payslip doc types) and 'unavailable' (nothing to
+ * compare yet: a blank/non-numeric declared value, or a calculator the
+ * reviewer hasn't touched) since there's nothing meaningful to report in
+ * either case. */
+function NetPayCheckStatus({ result }: { result: NetPayConsistencyResult | null }) {
+  if (!result || result.status === 'not-applicable' || result.status === 'unavailable') return null
+  if (result.status === 'match') {
+    return (
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, color: 'var(--success)' }}>
+        <Check size={11} />
+        Declared Net Salary matches the calculated reference.
+      </span>
+    )
+  }
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, fontSize: 10.5, fontWeight: 600, color: 'var(--danger)' }}>
+      <AlertTriangle size={11} />
+      Declared/calculated Net Salary don't match — flagged "Total Inconsistent" in Fraud Reason, scrolled up to it above.
+    </span>
+  )
+}
+
 function SectionTitle({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div
@@ -204,11 +259,15 @@ function FieldsSection({
   section,
   onFieldChange,
   checkResult,
+  netPayCheckResult,
+  calculatedNetPay,
   registerFieldRef,
 }: {
   section: Extract<OcrSection, { kind: 'fields' }>
   onFieldChange: (fieldIndex: number, value: string) => void
   checkResult: OutdatedCheckResult | null
+  netPayCheckResult: NetPayConsistencyResult | null
+  calculatedNetPay: string | null
   /** Registers this field row's wrapper div so OcrEditor's submit handler
    * can scroll straight to it the instant a check flags it — see
    * OcrEditor's `fieldRefs`. Called for every field, flagged or not, so
@@ -231,6 +290,13 @@ function FieldsSection({
           const unparseable = checkResult?.status === 'unparseable' && checkResult.fieldLabel === field.label ? checkResult : null
           const flagged = outdated ?? unparseable
           const isAutoCalculated = PAYSLIP_AUTO_FIELD_LABELS.includes(field.label)
+          // Net Salary is the one "declared" field this app compares
+          // against a calculator-derived reference — see
+          // checkNetPayConsistency in payslipCalc.ts. Never true for any
+          // other document type's schema, since this exact label doesn't
+          // exist there.
+          const isNetSalaryField = field.label === PAYSLIP_SALARY_FIELDS.netSalary
+          const netPayMismatch = isNetSalaryField && netPayCheckResult?.status === 'mismatch'
           return (
             <div key={fIdx} ref={(el) => registerFieldRef(field.label, el)} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -251,10 +317,18 @@ function FieldsSection({
                   )}
                   {isAutoCalculated && (
                     <span
-                      title="Kept in sync automatically — Duration from Salary Period Start/End Date above, Gross/Net/SSS/PhilHealth from the Salary Calculator below. Still a normal editable field: typing over it sticks until its own source changes again."
+                      title="Kept in sync automatically — Duration from Salary Period Start/End Date above, Gross/SSS/PhilHealth from the Salary Calculator below. Still a normal editable field: typing over it sticks until its own source changes again."
                       style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--success)', cursor: 'help' }}
                     >
                       ⟳ AUTO
+                    </span>
+                  )}
+                  {isNetSalaryField && (
+                    <span
+                      title="This is the document's own declared Net Salary — never overwritten. Compared against the calculator's reference figure below on Submit."
+                      style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: '0.02em', color: 'var(--text-muted)', cursor: 'help' }}
+                    >
+                      DECLARED
                     </span>
                   )}
                 </div>
@@ -266,7 +340,13 @@ function FieldsSection({
                   list={datalistId}
                   value={field.value}
                   onChange={(e) => onFieldChange(fIdx, e.target.value)}
-                  style={{ ...fieldBoxStyle, padding: '7px 9px', flex: 1, minWidth: 0, ...(flagged ? { borderColor: outdated ? 'var(--danger)' : 'var(--warning)' } : undefined) }}
+                  style={{
+                    ...fieldBoxStyle,
+                    padding: '7px 9px',
+                    flex: 1,
+                    minWidth: 0,
+                    ...(flagged ? { borderColor: outdated ? 'var(--danger)' : 'var(--warning)' } : netPayMismatch ? { borderColor: 'var(--danger)' } : undefined),
+                  }}
                 />
                 {hasSuggestions && (
                   <datalist id={datalistId}>
@@ -321,6 +401,38 @@ function FieldsSection({
                 >
                   <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
                   Couldn't verify this as a date (expected dd/mm/yyyy) — double-check the format.
+                </div>
+              )}
+              {/* The declared-vs-calculated comparison for Net Salary,
+                  per explicit direction: the real field always keeps the
+                  document's own declared value, and this reference row
+                  is purely for the reviewer to compare it against the
+                  calculator's own figure by eye — visible as soon as the
+                  calculator has anything to show, well before "Submit
+                  OCR corrections" is ever clicked. A mismatch after
+                  Submit escalates this exact row into the same
+                  red-bordered-banner treatment as the outdated-document
+                  check above (still just a Fraud Reason, never a
+                  rejection — see checkNetPayConsistency). */}
+              {isNetSalaryField && calculatedNetPay !== null && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 6,
+                    marginLeft: 134,
+                    padding: '6px 9px',
+                    borderRadius: 6,
+                    background: netPayMismatch ? 'var(--danger-tint)' : 'var(--bg-subtle)',
+                    color: netPayMismatch ? 'var(--danger)' : 'var(--text-muted)',
+                    fontSize: 10.5,
+                    fontWeight: netPayMismatch ? 500 : 400,
+                  }}
+                >
+                  {netPayMismatch && <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />}
+                  {netPayMismatch
+                    ? `Calculated: ${calculatedNetPay} — doesn't match the declared value above. Flagged "Total Inconsistent" in Fraud Reason.`
+                    : `Calculated (reference only, from the Salary Calculator below): ${calculatedNetPay}`}
                 </div>
               )}
             </div>
@@ -422,18 +534,22 @@ const CALCULATOR_ROWS: { key: keyof PayslipCalculatorInputs; label: string; hint
  * Each row is two inputs, per explicit direction: the reviewer types a
  * plain sum like "100+100" on the left, the evaluated total shows on
  * the right — see lib/calculator.ts `evaluateExpression`. Gross Salary
- * (Taxable + Non-Taxable) and Net Salary (Gross − Deduction) above
- * recompute automatically once their inputs here are used; see
- * lib/payslipCalc.ts `computePayslipAutoFields` for the exact
- * activation rules (an untouched calculator never overwrites a real,
- * OCR-extracted Gross/Net with a guessed zero). */
+ * above recomputes automatically (Taxable + Non-Taxable) once these
+ * inputs are used; see lib/payslipCalc.ts `computePayslipAutoFields` for
+ * the exact activation rules (an untouched calculator never overwrites a
+ * real, OCR-extracted Gross Salary with a guessed zero). Net Salary is
+ * NOT auto-written — per explicit direction, the real field always keeps
+ * the document's own declared value; a calculated reference figure
+ * (Gross − Deduction) shows next to it instead, purely for comparison —
+ * see FieldsSection's own Net-Salary-specific rendering above. */
 function PayslipCalculatorSection({ calculator, onChange }: { calculator: PayslipCalculatorInputs; onChange: (field: keyof PayslipCalculatorInputs, value: string) => void }) {
   return (
     <div>
       <SectionTitle>Salary Calculator</SectionTitle>
       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: -4, marginBottom: 10 }}>
         Portal only — never written to the OCR sheet. Type a sum (e.g. "100+100") and the total fills in on the right;
-        Gross Salary and Net Salary above pick it up automatically once you use Taxable/Non-Taxable Income or Deduction.
+        Gross Salary above picks it up automatically once you use Taxable/Non-Taxable Income or Deduction. Net Salary
+        stays as declared — a calculated reference shows next to it instead, compared against it on Submit.
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {CALCULATOR_ROWS.map((row) => {

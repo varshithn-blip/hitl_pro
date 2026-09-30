@@ -1,10 +1,16 @@
 // Payslip-specific automatic calculations, per explicit direction:
 //   - Duration, derived from Salary Period Start/End Date.
 //   - Gross Salary = Taxable Income + Non-Taxable Income.
-//   - Net Salary = Gross Salary - Deduction.
+//   - A calculated Net Pay reference (Gross Salary - Deduction) — NOT
+//     written into the real Net Salary field. That field keeps whatever
+//     the document itself declares ("declared"); the calculated figure
+//     is shown alongside it purely for comparison, and is what
+//     `checkNetPayConsistency` checks the declared value against,
+//     auto-marking "Total Inconsistent" in Fraud Reason on a mismatch
+//     (never a rejection — see that function's own comments).
 //   - SSS Premium / PhilHealth Premium get the same "type a sum, see the
-//     total" calculator convenience as the three fields above, even
-//     though they don't feed into Gross/Net.
+//     total" calculator convenience as Taxable/Non-Taxable/Deduction,
+//     even though they don't feed into Gross/Net.
 // Taxable Income, Non-Taxable Income, and Deduction are NEW fields that
 // exist only in this portal — never in the real OCR sheet (see
 // usePortal.ts's `payslipCalculator` state comment for how that's kept
@@ -13,7 +19,8 @@
 // scripts/verify-parser.ts.
 
 import { evaluateExpression, formatComputed } from './calculator'
-import { parseDdMmYyyy } from './ruleChecks'
+import { findField, parseDdMmYyyy } from './ruleChecks'
+import type { OcrSection } from './types'
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 
@@ -33,13 +40,16 @@ export const PAYSLIP_SALARY_FIELDS = {
   philHealthPremium: 'PhilHealth Premium',
 } as const
 
-/** Every real field this module can auto-fill, in one place — so a
- * caller (usePortal.ts) or a UI badge (OcrEditor.tsx) can check
- * membership without repeating the list. */
+/** Every real field this module auto-fills, in one place — so a caller
+ * (usePortal.ts) or a UI badge (OcrEditor.tsx) can check membership
+ * without repeating the list. Net Salary is deliberately NOT here: per
+ * explicit direction, the real field keeps whatever the document itself
+ * declares ("declared") and is never overwritten — see
+ * `PayslipAutoFields.calculatedNetPay` and `checkNetPayConsistency`
+ * below for the calculator's own reference figure instead. */
 export const PAYSLIP_AUTO_FIELD_LABELS: readonly string[] = [
   PAYSLIP_DATE_FIELDS.duration,
   PAYSLIP_SALARY_FIELDS.grossSalary,
-  PAYSLIP_SALARY_FIELDS.netSalary,
   PAYSLIP_SALARY_FIELDS.sssPremium,
   PAYSLIP_SALARY_FIELDS.philHealthPremium,
 ]
@@ -87,44 +97,114 @@ export interface PayslipAutoFields {
    * guess (or, worse, a silent zero). */
   duration: string | null
   grossSalary: string | null
-  netSalary: string | null
+  /** The calculator's own reference figure (Taxable + Non-Taxable −
+   * Deduction) — per explicit direction, this is deliberately NEVER
+   * written into the real "Net Salary" OCR field (see
+   * `PAYSLIP_AUTO_FIELD_LABELS`'s comment). The real field keeps
+   * whatever the document itself declares; this is shown alongside it
+   * purely for the reviewer to compare by eye, and is what
+   * `checkNetPayConsistency` below checks the declared value against. */
+  calculatedNetPay: string | null
   sssPremium: string | null
   philHealthPremium: string | null
 }
 
+/** Shared by `computePayslipAutoFields` (below) and
+ * `checkNetPayConsistency` (further down) so the Gross/Net formula lives
+ * in exactly one place. Gross only computes once the reviewer has
+ * engaged with at least one of Taxable/Non-Taxable Income — an untouched
+ * calculator must never silently imply a Gross/Net of "0". Net only
+ * computes once Gross is computing too, per the explicit formula
+ * (Net = Gross − Deduction): Deduction alone, with neither income field
+ * touched, has no Gross to subtract from, so it's left alone rather than
+ * guessed. */
+function computeCalculatorGrossNet(calculator: PayslipCalculatorInputs): { gross: number | null; net: number | null } {
+  const taxable = evaluateExpression(calculator.taxableIncomeExpr)
+  const nonTaxable = evaluateExpression(calculator.nonTaxableIncomeExpr)
+  const deduction = evaluateExpression(calculator.deductionExpr)
+
+  const grossActive = taxable !== null || nonTaxable !== null
+  const gross = grossActive ? (taxable ?? 0) + (nonTaxable ?? 0) : null
+  const net = grossActive ? (gross ?? 0) - (deduction ?? 0) : null
+  return { gross, net }
+}
+
 /** Pure computation of what each auto-fillable real field's value
  * SHOULD be right now, given the two live inputs: the OCR date fields'
- * current values, and the calculator's current expressions.
- *
- * Gross Salary only computes once the reviewer has engaged with at
- * least one of Taxable/Non-Taxable Income — an untouched calculator
- * must never silently override a real, OCR-extracted Gross Salary with
- * "0". Net Salary only computes once Gross is computing too, per the
- * explicit formula (Net = Gross − Deduction): Deduction alone, with
- * neither income field touched, has no Gross to subtract from, so it's
- * left alone in that case rather than guessed. */
+ * current values, and the calculator's current expressions. */
 export function computePayslipAutoFields(
   salaryPeriodStart: string | null,
   salaryPeriodEnd: string | null,
   calculator: PayslipCalculatorInputs,
 ): PayslipAutoFields {
   const duration = salaryPeriodStart != null && salaryPeriodEnd != null ? computeDurationDays(salaryPeriodStart, salaryPeriodEnd) : null
-
-  const taxable = evaluateExpression(calculator.taxableIncomeExpr)
-  const nonTaxable = evaluateExpression(calculator.nonTaxableIncomeExpr)
-  const deduction = evaluateExpression(calculator.deductionExpr)
+  const { gross, net } = computeCalculatorGrossNet(calculator)
   const sss = evaluateExpression(calculator.sssExpr)
   const philHealth = evaluateExpression(calculator.philHealthExpr)
-
-  const grossActive = taxable !== null || nonTaxable !== null
-  const gross = grossActive ? (taxable ?? 0) + (nonTaxable ?? 0) : null
-  const net = grossActive ? (gross ?? 0) - (deduction ?? 0) : null
 
   return {
     duration: duration != null ? String(duration) : null,
     grossSalary: gross != null ? formatComputed(gross) : null,
-    netSalary: net != null ? formatComputed(net) : null,
+    calculatedNetPay: net != null ? formatComputed(net) : null,
     sssPremium: sss != null ? formatComputed(sss) : null,
     philHealthPremium: philHealth != null ? formatComputed(philHealth) : null,
   }
+}
+
+/** The exact Fraud Reason string this check writes — must match the
+ * real taxonomy's text exactly, same requirement as
+ * `OUTDATED_DOCUMENT_REASON` in ruleChecks.ts (confirmed present, spelled
+ * exactly this way, in lib/taxonomy.ts's `FALLBACK_TAXONOMY.fraudReasons`
+ * — that list is the user-provided source of truth for the live sheet's
+ * actual Fraud Reason dropdown). */
+export const TOTAL_INCONSISTENT_FRAUD_REASON = 'Total Inconsistent'
+
+/** How far apart declared and calculated Net Salary can be before this
+ * counts as a genuine mismatch rather than a cent or two of rounding
+ * slop between however the OCR pipeline formatted its number and
+ * `formatComputed`'s own rounding. */
+const NET_PAY_MATCH_TOLERANCE = 0.01
+
+/** Declared OCR amounts are plain numbers in every fixture seen so far
+ * (no currency symbols), but may carry commas/whitespace or the
+ * force-text `'` prefix a value gets written back with after a submit
+ * (see ocrParser.ts `forceTextIfDateOrNumeric`) — strip both before
+ * parsing, same convention as `parseDdMmYyyy`'s leading-`'` handling. */
+function parseDeclaredAmount(value: string): number | null {
+  const cleaned = value.trim().replace(/^'/, '').replace(/[,%\s]/g, '')
+  if (!cleaned) return null
+  const n = Number(cleaned)
+  return Number.isFinite(n) ? n : null
+}
+
+export type NetPayConsistencyResult =
+  | { status: 'not-applicable' }
+  | { status: 'unavailable' }
+  | { status: 'match'; declared: number; calculated: number }
+  | { status: 'mismatch'; declared: number; calculated: number }
+
+/** Compares the real, OCR-declared Net Salary field against the
+ * calculator's own reference figure (Taxable + Non-Taxable − Deduction).
+ * Per explicit direction this is a soft signal, never a rejection — a
+ * mismatch only ever gets surfaced as a Fraud Reason (see
+ * usePortal.ts's `confirmOcrFields`); Category/Status are left
+ * completely untouched, unlike `checkOutdatedDocument`.
+ *
+ * `unavailable` covers both "nothing to compare yet" cases — the
+ * declared field is blank/non-numeric, or the reviewer hasn't engaged
+ * the calculator at all (the same `grossActive` gate
+ * `computeCalculatorGrossNet` uses) — so an untouched calculator never
+ * produces a false mismatch against a real declared value. */
+export function checkNetPayConsistency(baseDocType: string, sections: OcrSection[], calculator: PayslipCalculatorInputs): NetPayConsistencyResult {
+  if (baseDocType !== 'payslip') return { status: 'not-applicable' }
+
+  const declaredField = findField(sections, PAYSLIP_SALARY_FIELDS.netSalary)
+  const declared = declaredField ? parseDeclaredAmount(declaredField.value) : null
+  const { net: calculated } = computeCalculatorGrossNet(calculator)
+
+  if (declared === null || calculated === null) return { status: 'unavailable' }
+
+  return Math.abs(declared - calculated) > NET_PAY_MATCH_TOLERANCE
+    ? { status: 'mismatch', declared, calculated }
+    : { status: 'match', declared, calculated }
 }
