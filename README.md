@@ -400,6 +400,102 @@ real and clickable — only the data source is fake.
     needed to make a manual edit stick at all) scrolls to its own
     warning — all of it leaving Category/Status/Fraud Reason completely
     untouched throughout.
+  - **Pre-submit deduction-consistency check** (`lib/deductionCheck.ts`,
+    orchestrated by `runDeductionCheck` in `hooks/usePortal.ts`) — a
+    direct port of a separate Google Apps Script
+    (`processPayslipPremiumFlags`) that validates PhilHealth Premium and
+    SSS Premium against the government's own employee-contribution
+    formulas. The script originally ran as a scheduled, post-hoc audit —
+    scanning rows that were *already* decided. Per explicit direction,
+    this port instead runs synchronously inside **Submit & Next**,
+    against the reviewer's own corrected OCR values, and its result is
+    folded into the very same write that sets Status — never a second,
+    separate write.
+    - `getPhilHealthEmployeeShare`/`getSssEmployeeContribution` are exact
+      ports of the script's bracket tables (PhilHealth: floor(clamp(0.025
+      × monthly basic salary, 250, 2500)); SSS: flat 250 below 5250,
+      +25 per 500-wide bracket from a 275 base, SS caps at 1000 with the
+      remainder going to MPF, flat 1750 (1000 SS + 750 MPF) at/above
+      34750).
+    - **Coverage Period "M" (monthly)** runs `checkMonthly` directly
+      against that one payslip's own figures: PhilHealth must land in
+      `[expected, expected + 50]`, SSS total within ±10 of the bracket
+      total.
+    - **Coverage Period "S" (semi-monthly) — scope narrowed from the
+      script, per explicit direction**: the script only ever paired two
+      "S" payslips once *both* already had a decision, which doesn't fit
+      a single reviewer's one-click submit. Here, **the first payslip in
+      a transaction (`payslip_0`) never triggers a check at all** —
+      there's nothing to pair against yet, so it goes straight through
+      to saving. Any later payslip (`payslip_1`, `payslip_2`, …) with
+      Coverage "S" looks for another payslip in the *same transaction*
+      whose Salary Period falls in the same month+year (mirroring the
+      script's own month-match rule); if found, the two payslips' Basic
+      Pay/PhilHealth/SSS figures are summed and run through the same
+      monthly formula (`checkPairedSemiMonthly`). If no sibling is found,
+      or the sibling's own figures aren't usable (e.g. still blank), it
+      falls back to the script's "unpaired S" formula
+      (`checkUnpairedSemiMonthly`: this payslip's Basic Pay × 2 stands in
+      for the monthly-equivalent, PhilHealth checked against half that
+      range, and SSS checked a 3-way tolerance — total, SS-only, or
+      MPF-only each within ±10 — since a single semi-monthly premium
+      could legitimately be either half of the monthly bracket).
+    - **Per explicit direction, only the row being submitted is ever
+      written to** — even when a sibling match is found, nothing is
+      written back to the sibling's own row. A reviewer working out of
+      queue order and reaching `payslip_1` before `payslip_0` has ever
+      been opened is a known, accepted limitation: the sibling's OCR
+      sheet is read as-is, which may still be its raw, un-reviewed
+      values.
+    - **Informational only, per explicit direction** — a flag never
+      blocks or delays the submit beyond the deliberate pause described
+      below; it's folded into the same decision payload the reviewer
+      already built. On `flagged`, the resolved Fraud Reason string is
+      added to Fraud Reason (if not already present) before the write;
+      nothing is added or removed on `pass`/`skipped`/`unavailable`/
+      `not-applicable`.
+    - **Fraud Reason string resolved at runtime, not hardcoded** — the
+      script writes `"Inconsistent Deduction"`, this app's own fallback
+      taxonomy has `"Deduction Inconsistent"` (reversed word order), and
+      the live sheet's actual Ref-tab wording could be either (or
+      neither) once `mergeTaxonomy` replaces the fallback list wholesale.
+      `findFraudReasonMatch` matches case/word-order-insensitively
+      against whatever `taxonomy.fraudReasons` holds live at check time,
+      falling back to `"Deduction Inconsistent"` only if nothing matches.
+    - **Out of scope for v1, per explicit direction**: the script also
+      writes the expected range plus a background color directly into
+      each payslip's own OCR sheet next to the Premium rows —
+      `sheetsApi.ts` has no cell-formatting write path, and adding one
+      was treated as real new scope. The master sheet's Fraud Reason is
+      the only output here.
+    - **Loading screen** — a new `'checking'` `SyncState` (alongside
+      `idle`/`saving`/`saved`/`error`) shows "Checking inconsistencies…"
+      on the Submit button and "Checking deduction consistency…" in the
+      status footer the moment Submit is clicked, before anything is
+      written. Once the check resolves, the footer updates to a short
+      readout — "Flagged — \<matched reason\>" or "Passed — deductions
+      look consistent" — held for a brief, deliberate pause (~700ms)
+      so it's actually readable before moving on to the real `'saving'`
+      write, rather than an instant flicker.
+    - Whether to retire the original Apps Script now that this logic
+      also runs inside the portal is a separate decision left to the
+      user — running both at once would double-process the same rows
+      under slightly different Flags/Fraud Reason semantics.
+    - Covered by regression cases in `verify:parser` (both government
+      formulas against every documented bracket boundary;
+      `checkMonthly`/`checkPairedSemiMonthly`/`checkUnpairedSemiMonthly`
+      pass/flag cases; `findFraudReasonMatch` against both word orders;
+      `parsePayslipDocumentIndex`/`isSameMonthYear`) and confirmed
+      end-to-end via Playwright against demo mode: `payslip_0` submits
+      with no check attempted at all; a `payslip_1` with a blank SSS
+      Premium comes back `unavailable` and adds nothing; a `payslip_1`
+      with a usable but out-of-range PhilHealth Premium (its sibling's
+      own data not usable, so it falls through to the unpaired formula)
+      gets flagged and the matched Fraud Reason string added, visibly
+      confirmed in both the mid-flight loading screen and the final
+      Decision tab; and a payslip switched to Coverage "M" with figures
+      adjusted to land inside the expected ranges passes cleanly with
+      Fraud Reason untouched.
 - **Decision panel** — OCR details is still the tab that opens by
   default when a document is selected (correcting fields comes before
   deciding); a brief change to default to Decision instead — reasoning

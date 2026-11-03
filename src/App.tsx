@@ -104,6 +104,7 @@ export default function App() {
                       onChange={p.setDecisionDraft}
                       onSubmit={p.submit}
                       submitting={p.syncState === 'saving'}
+                      checking={p.syncState === 'checking'}
                       loadingDoc={p.loadingDoc}
                     />
                   )}
@@ -116,7 +117,7 @@ export default function App() {
             queueCount={p.masterRows.length}
             pendingCount={p.pendingCount}
             syncState={p.syncState}
-            syncMessage={p.syncState === 'error' ? p.syncMessage : undefined}
+            syncMessage={p.syncState === 'error' || p.syncState === 'checking' ? p.syncMessage : undefined}
             loadingProgress={p.rowsLoadProgress}
           />
         </>

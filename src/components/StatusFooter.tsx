@@ -1,7 +1,7 @@
 interface Props {
   queueCount: number
   pendingCount: number
-  syncState: 'idle' | 'saving' | 'saved' | 'error'
+  syncState: 'idle' | 'checking' | 'saving' | 'saved' | 'error'
   syncMessage?: string
   /** Set while a large date tab is still streaming in past its first
    * batch (see usePortal.ts `fetchMasterRows`) — surfaces "loading, not
@@ -11,6 +11,7 @@ interface Props {
 
 const SYNC_LABEL: Record<Props['syncState'], string> = {
   idle: 'All changes saved',
+  checking: 'Checking…',
   saving: 'Saving…',
   saved: 'All changes saved',
   error: 'Save failed — see console',
@@ -18,6 +19,7 @@ const SYNC_LABEL: Record<Props['syncState'], string> = {
 
 const SYNC_COLOR: Record<Props['syncState'], string> = {
   idle: 'var(--success)',
+  checking: 'var(--warning)',
   saving: 'var(--warning)',
   saved: 'var(--success)',
   error: 'var(--danger)',

@@ -20,6 +20,17 @@ import {
   EMPTY_PAYSLIP_CALCULATOR,
 } from '../src/lib/payslipCalc'
 import { checkOutdatedDocument, daysSince, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy } from '../src/lib/ruleChecks'
+import {
+  checkMonthly,
+  checkPairedSemiMonthly,
+  checkUnpairedSemiMonthly,
+  DEDUCTION_INCONSISTENT_CANDIDATES,
+  findFraudReasonMatch,
+  getPhilHealthEmployeeShare,
+  getSssEmployeeContribution,
+  isSameMonthYear,
+  parsePayslipDocumentIndex,
+} from '../src/lib/deductionCheck'
 import type { GridCell } from '../src/lib/sheetsApi'
 import type { OcrSection } from '../src/lib/types'
 
@@ -585,6 +596,164 @@ console.log('\n=== payslipCalc (checkSalaryPeriodRange) ===')
 
   if (fail > 0) {
     console.log(`\n${fail} checkSalaryPeriodRange case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+// deductionCheck.ts: a direct port of an existing Google Apps Script
+// (processPayslipPremiumFlags) that validates PhilHealth/SSS deductions
+// against government formulas. These cases check the two lookup tables at
+// their documented boundaries, then the three check variants (monthly,
+// paired semi-monthly, unpaired semi-monthly) against representative
+// pass/flag cases, then the Fraud Reason string matcher and the small
+// parsing helpers around it.
+console.log('\n=== deductionCheck (getPhilHealthEmployeeShare / getSssEmployeeContribution) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  ok(getPhilHealthEmployeeShare(0) === 250, 'PhilHealth share for salary 0 clamps to the 250 floor')
+  ok(getPhilHealthEmployeeShare(-500) === 250, 'PhilHealth share for a negative salary clamps to the 250 floor')
+  ok(getPhilHealthEmployeeShare(5000) === 250, `PhilHealth share for 5000 (2.5% = 125) clamps up to 250 - got ${getPhilHealthEmployeeShare(5000)}`)
+  ok(getPhilHealthEmployeeShare(20000) === 500, `PhilHealth share for 20000 is 20000*2.5% = 500 - got ${getPhilHealthEmployeeShare(20000)}`)
+  ok(getPhilHealthEmployeeShare(12345) === 308, `PhilHealth share for 12345 is floor(308.625) = 308 - got ${getPhilHealthEmployeeShare(12345)}`)
+  ok(getPhilHealthEmployeeShare(200000) === 2500, `PhilHealth share for 200000 (2.5% = 5000) clamps down to the 2500 ceiling - got ${getPhilHealthEmployeeShare(200000)}`)
+
+  ok(JSON.stringify(getSssEmployeeContribution(0)) === JSON.stringify({ ss: 250, mpf: 0, total: 250 }), 'SSS contribution for salary 0 is the 250 floor')
+  ok(
+    JSON.stringify(getSssEmployeeContribution(5000)) === JSON.stringify({ ss: 250, mpf: 0, total: 250 }),
+    `SSS contribution below the 5250 bracket start is the 250 floor - got ${JSON.stringify(getSssEmployeeContribution(5000))}`,
+  )
+  ok(
+    JSON.stringify(getSssEmployeeContribution(5250)) === JSON.stringify({ ss: 275, mpf: 0, total: 275 }),
+    `SSS contribution at the first bracket (5250) is 275 - got ${JSON.stringify(getSssEmployeeContribution(5250))}`,
+  )
+  ok(
+    JSON.stringify(getSssEmployeeContribution(19750)) === JSON.stringify({ ss: 1000, mpf: 0, total: 1000 }),
+    `SSS contribution at 19750 is exactly the SS cap (total=1000, mpf=0) - got ${JSON.stringify(getSssEmployeeContribution(19750))}`,
+  )
+  ok(
+    JSON.stringify(getSssEmployeeContribution(20250)) === JSON.stringify({ ss: 1000, mpf: 25, total: 1025 }),
+    `SSS contribution at 20250 starts spilling into MPF - got ${JSON.stringify(getSssEmployeeContribution(20250))}`,
+  )
+  ok(
+    JSON.stringify(getSssEmployeeContribution(34749)) === JSON.stringify({ ss: 1000, mpf: 725, total: 1725 }),
+    `SSS contribution just under the 34750 ceiling - got ${JSON.stringify(getSssEmployeeContribution(34749))}`,
+  )
+  ok(
+    JSON.stringify(getSssEmployeeContribution(34750)) === JSON.stringify({ ss: 1000, mpf: 750, total: 1750 }),
+    `SSS contribution at/above 34750 is the flat 1750 ceiling - got ${JSON.stringify(getSssEmployeeContribution(34750))}`,
+  )
+  ok(
+    JSON.stringify(getSssEmployeeContribution(50000)) === JSON.stringify({ ss: 1000, mpf: 750, total: 1750 }),
+    'SSS contribution well above 34750 stays at the flat ceiling',
+  )
+
+  if (fail > 0) {
+    console.log(`\n${fail} getPhilHealthEmployeeShare/getSssEmployeeContribution case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+console.log('\n=== deductionCheck (checkMonthly / checkPairedSemiMonthly / checkUnpairedSemiMonthly) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  // basicPay 20000 -> PhilHealth expected [500,550], SSS expected [990,1010].
+  const monthlyClean = checkMonthly({ basicPay: 20000, philHealthPremium: 520, sssPremium: 1000 })
+  ok(!monthlyClean.flagged, `a clean monthly payslip (basicPay 20000, PH 520, SSS 1000) passes - got ${JSON.stringify(monthlyClean)}`)
+
+  const monthlyBadPh = checkMonthly({ basicPay: 20000, philHealthPremium: 100, sssPremium: 1000 })
+  ok(
+    monthlyBadPh.flagged && monthlyBadPh.reasons.includes('philhealth') && !monthlyBadPh.reasons.includes('sss'),
+    `a too-low PhilHealth Premium flags only 'philhealth' - got ${JSON.stringify(monthlyBadPh)}`,
+  )
+
+  const monthlyBadSss = checkMonthly({ basicPay: 20000, philHealthPremium: 520, sssPremium: 50 })
+  ok(
+    monthlyBadSss.flagged && monthlyBadSss.reasons.includes('sss') && !monthlyBadSss.reasons.includes('philhealth'),
+    `a too-low SSS Premium flags only 'sss' - got ${JSON.stringify(monthlyBadSss)}`,
+  )
+
+  // Two "S" payslips, basicPay 10000 each -> combined 20000, same expected
+  // ranges as the monthly case above.
+  const pairedClean = checkPairedSemiMonthly({ basicPay: 10000, philHealthPremium: 260, sssPremium: 500 }, { basicPay: 10000, philHealthPremium: 260, sssPremium: 500 })
+  ok(!pairedClean.flagged, `two clean semi-monthly payslips summing to a clean monthly figure pass - got ${JSON.stringify(pairedClean)}`)
+
+  const pairedFlagged = checkPairedSemiMonthly({ basicPay: 10000, philHealthPremium: 100, sssPremium: 500 }, { basicPay: 10000, philHealthPremium: 100, sssPremium: 500 })
+  ok(
+    pairedFlagged.flagged && pairedFlagged.reasons.includes('philhealth'),
+    `two semi-monthly payslips whose COMBINED PhilHealth is too low get flagged - got ${JSON.stringify(pairedFlagged)}`,
+  )
+
+  // Unpaired "S", basicPay 10125 -> monthly-equivalent 20250: PhilHealth
+  // expected half-range [253,303], SSS tolerant of total[1015,1035],
+  // ss-only[990,1010], or mpf-only[15,35] (mpf=25, confirmed above).
+  const unpairedClean = checkUnpairedSemiMonthly({ basicPay: 10125, philHealthPremium: 260, sssPremium: 1000 })
+  ok(!unpairedClean.flagged, `unpaired "S" passing via the ss-only tolerance (1000 matches ss=1000) - got ${JSON.stringify(unpairedClean)}`)
+
+  const unpairedCleanViaMpf = checkUnpairedSemiMonthly({ basicPay: 10125, philHealthPremium: 260, sssPremium: 25 })
+  ok(!unpairedCleanViaMpf.flagged, `unpaired "S" passing via the mpf-only tolerance (25 matches mpf=25) - got ${JSON.stringify(unpairedCleanViaMpf)}`)
+
+  const unpairedBadSss = checkUnpairedSemiMonthly({ basicPay: 10125, philHealthPremium: 260, sssPremium: 500 })
+  ok(
+    unpairedBadSss.flagged && unpairedBadSss.reasons.includes('sss'),
+    `unpaired "S" matching none of the three SSS tolerances is flagged - got ${JSON.stringify(unpairedBadSss)}`,
+  )
+
+  const unpairedBadPh = checkUnpairedSemiMonthly({ basicPay: 10125, philHealthPremium: 100, sssPremium: 1000 })
+  ok(
+    unpairedBadPh.flagged && unpairedBadPh.reasons.includes('philhealth'),
+    `unpaired "S" with PhilHealth below the halved range is flagged - got ${JSON.stringify(unpairedBadPh)}`,
+  )
+
+  if (fail > 0) {
+    console.log(`\n${fail} checkMonthly/checkPairedSemiMonthly/checkUnpairedSemiMonthly case(s) failed.`)
+    process.exitCode = 1
+  }
+}
+
+console.log('\n=== deductionCheck (findFraudReasonMatch / parsePayslipDocumentIndex / isSameMonthYear) ===')
+{
+  let fail = 0
+  const ok = (cond: boolean, label: string) => {
+    if (!cond) fail++
+    console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${label}`)
+  }
+
+  const matchStandardOrder = findFraudReasonMatch(['Font Inconsistent', 'Deduction Inconsistent'], DEDUCTION_INCONSISTENT_CANDIDATES)
+  ok(matchStandardOrder === 'Deduction Inconsistent', `matches this app's own taxonomy word order - got "${matchStandardOrder}"`)
+
+  const matchReversedOrder = findFraudReasonMatch(['Inconsistent Deduction'], DEDUCTION_INCONSISTENT_CANDIDATES)
+  ok(matchReversedOrder === 'Inconsistent Deduction', `also matches the Apps Script's own (reversed) word order - got "${matchReversedOrder}"`)
+
+  const matchCaseInsensitive = findFraudReasonMatch(['deduction inconsistent'], DEDUCTION_INCONSISTENT_CANDIDATES)
+  ok(matchCaseInsensitive === 'deduction inconsistent', `matches case-insensitively, returning the live string's own casing - got "${matchCaseInsensitive}"`)
+
+  const noMatch = findFraudReasonMatch(['Font Inconsistent', 'Total Inconsistent'], DEDUCTION_INCONSISTENT_CANDIDATES)
+  ok(noMatch === null, `returns null when neither word order is present live - got ${JSON.stringify(noMatch)}`)
+
+  ok(parsePayslipDocumentIndex('payslip_0') === 0, 'parses the trailing index off "payslip_0"')
+  ok(parsePayslipDocumentIndex('payslip_12') === 12, 'parses a multi-digit trailing index')
+  ok(parsePayslipDocumentIndex('payslip') === null, 'a document type with no trailing index is null')
+
+  const aug1 = parseDdMmYyyy('01/08/2026')
+  const aug15 = parseDdMmYyyy('15/08/2026')
+  const sep1 = parseDdMmYyyy('01/09/2026')
+  const aug1PriorYear = parseDdMmYyyy('01/08/2025')
+  ok(!!aug1 && !!aug15 && isSameMonthYear(aug1, aug15), '01/08/2026 and 15/08/2026 are the same month+year')
+  ok(!!aug1 && !!sep1 && !isSameMonthYear(aug1, sep1), '01/08/2026 and 01/09/2026 are different months')
+  ok(!!aug1 && !!aug1PriorYear && !isSameMonthYear(aug1, aug1PriorYear), '01/08/2026 and 01/08/2025 are different years despite the same month')
+
+  if (fail > 0) {
+    console.log(`\n${fail} findFraudReasonMatch/parsePayslipDocumentIndex/isSameMonthYear case(s) failed.`)
     process.exitCode = 1
   }
 }

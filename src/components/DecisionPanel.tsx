@@ -11,6 +11,12 @@ interface Props {
   onChange: (next: DecisionDraft) => void
   onSubmit: () => void
   submitting: boolean
+  /** True while the pre-submit deduction-consistency check (Payslip only
+   * — see usePortal.ts's `runDeductionCheck`) is running, between the
+   * reviewer's click and the actual sheet write. Kept as its own prop
+   * rather than folded into `submitting` so the button can say exactly
+   * what's happening right now. */
+  checking: boolean
   /** True while the OCR document for the currently-selected row is still
    * being fetched. Submitting during this window would race the fetch —
    * see usePortal.ts submit()'s own rowKey guard for why this must be
@@ -69,7 +75,7 @@ const selectBoxStyle: React.CSSProperties = {
   background: 'white',
 }
 
-export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmit, submitting, loadingDoc }: Props) {
+export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmit, submitting, checking, loadingDoc }: Props) {
   const docType = baseDocType(documentType)
   const reasons = taxonomy.rejectionReasonsByDocType[docType] ?? []
   const needsReason = draft.status === 'Manually Rejected'
@@ -83,6 +89,7 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
     !(isIncomplete && draft.status === 'Manually Approved') &&
     (!needsReason || draft.rejectionReason !== '') &&
     !submitting &&
+    !checking &&
     !loadingDoc
 
   return (
@@ -263,8 +270,8 @@ export function DecisionPanel({ taxonomy, documentType, draft, onChange, onSubmi
           marginTop: 2,
         }}
       >
-        {submitting ? 'Saving…' : loadingDoc ? 'Loading document…' : 'Submit & Next'}
-        {!submitting && !loadingDoc && <ArrowRight size={15} />}
+        {checking ? 'Checking inconsistencies…' : submitting ? 'Saving…' : loadingDoc ? 'Loading document…' : 'Submit & Next'}
+        {!checking && !submitting && !loadingDoc && <ArrowRight size={15} />}
       </button>
       <span style={{ textAlign: 'center', fontSize: 10, color: 'var(--text-muted)' }}>Saves to the master sheet + OCR sheet instantly</span>
     </div>

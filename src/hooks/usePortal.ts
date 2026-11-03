@@ -19,8 +19,22 @@ import {
   type NetPayConsistencyResult,
   type PayslipCalculatorInputs,
 } from '../lib/payslipCalc'
-import { checkOutdatedDocument, findField, OUTDATED_DOCUMENT_REASON, type OutdatedCheckResult } from '../lib/ruleChecks'
-import { batchUpdateValues, getGridData, listTabs } from '../lib/sheetsApi'
+import {
+  checkMonthly,
+  checkPairedSemiMonthly,
+  checkUnpairedSemiMonthly,
+  DEDUCTION_INCONSISTENT_CANDIDATES,
+  DEDUCTION_INCONSISTENT_FALLBACK,
+  findFraudReasonMatch,
+  parseDeductionAmount,
+  parsePayslipDocumentIndex,
+  PAYSLIP_DEDUCTION_FIELDS,
+  isSameMonthYear,
+  type DeductionCheckInputs,
+  type DeductionCheckResult,
+} from '../lib/deductionCheck'
+import { checkOutdatedDocument, findField, OUTDATED_DOCUMENT_REASON, parseDdMmYyyy, type OutdatedCheckResult } from '../lib/ruleChecks'
+import { batchUpdateValues, getGridData, listTabs, type GridCell } from '../lib/sheetsApi'
 import { baseDocType, loadCachedTaxonomy, mergeTaxonomy, saveCachedTaxonomy } from '../lib/taxonomy'
 import { isPendingStatus, masterRowKey, type CategoryValue, type DecisionDraft, type MasterRow, type OcrDocument, type OcrSection, type QueueFilters, type Taxonomy } from '../lib/types'
 
@@ -53,7 +67,135 @@ export interface ConfirmOcrResult {
   dateRange: DateRangeCheckResult
 }
 
-type SyncState = 'idle' | 'saving' | 'saved' | 'error'
+type SyncState = 'idle' | 'checking' | 'saving' | 'saved' | 'error'
+
+const DEDUCTION_CHECK_PAUSE_MS = 700
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Fetches and parses one row's OCR document fresh — the same fetch+parse
+ * logic the OCR-load effect below uses for the currently-selected row,
+ * extracted so the deduction check (below) can also pull a SIBLING row's
+ * OCR data (same transaction, a different payslip document) on demand.
+ * Returns the raw `grid` alongside the parsed `doc` — the OCR-load effect
+ * needs it for `attachFieldValidation` (per-cell dropdown rules), which a
+ * sibling lookup has no use for and simply ignores. Throws on a network/
+ * parse failure; callers decide how to handle that (the OCR-load effect
+ * surfaces it as a load error, the deduction check's sibling lookup just
+ * treats it as "no usable sibling data" and moves on — see
+ * `fetchSiblingOcrDocument`). */
+async function fetchOcrDocument(
+  row: MasterRow,
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<{ doc: OcrDocument; grid: GridCell[][] } | null> {
+  const parsedUrl = parseSheetUrlHref(row.sheetUrl.href)
+  if (!parsedUrl) return null
+  const quotedTab = `'${row.documentType.replace(/'/g, "''")}'`
+  // getGridData, not the lighter getValues — needed for per-cell
+  // dataValidation so a field like Company Category can offer live
+  // suggestions (see attachFieldValidation). OCR tabs are small (a few
+  // dozen rows), so this doesn't carry the cost that made the master
+  // sheet's row list switch away from it.
+  const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, accessToken, { signal })
+  const rows = grid.map((r) => r.map((cell) => cell?.formattedValue ?? ''))
+  const parsedDoc = parseOcrRows(rows)
+  const doc: OcrDocument = { rowKey: masterRowKey(row), spreadsheetId: parsedUrl.spreadsheetId, tabTitle: row.documentType, gid: parsedUrl.gid, ...parsedDoc }
+  return { doc, grid }
+}
+
+/** Same as `fetchOcrDocument`, but demo-mode-aware (pulls from
+ * `MOCK_OCR_DOCS` instead of the network) and never throws — a sibling
+ * payslip this can't read (network error, unresolvable Sheet URL, demo
+ * fixture missing) is just treated as "no usable sibling data" by the
+ * deduction check below, never a reason to fail the whole submit. Only
+ * ever needs the parsed `doc`, never the raw grid. */
+async function fetchSiblingOcrDocument(row: MasterRow, accessToken: string): Promise<OcrDocument | null> {
+  if (DEMO_MODE) return MOCK_OCR_DOCS[masterRowKey(row)] ?? null
+  try {
+    const result = await fetchOcrDocument(row, accessToken)
+    return result?.doc ?? null
+  } catch {
+    return null
+  }
+}
+
+function extractDeductionInputs(sections: OcrSection[]): DeductionCheckInputs | null {
+  const basicPay = parseDeductionAmount(findField(sections, PAYSLIP_DEDUCTION_FIELDS.basicPay)?.value ?? '')
+  const philHealthPremium = parseDeductionAmount(findField(sections, PAYSLIP_SALARY_FIELDS.philHealthPremium)?.value ?? '')
+  const sssPremium = parseDeductionAmount(findField(sections, PAYSLIP_SALARY_FIELDS.sssPremium)?.value ?? '')
+  if (basicPay === null || philHealthPremium === null || sssPremium === null) return null
+  return { basicPay, philHealthPremium, sssPremium }
+}
+
+/** The Payslip PhilHealth/SSS deduction-consistency check — see
+ * deductionCheck.ts for the formulas/pairing rules and the explicit scope
+ * decisions this ports from the original Apps Script. Called from
+ * `submit()` below, against the reviewer's own corrected `draftSections`,
+ * before anything is written to the sheet. Purely informational: the
+ * caller only ever adds a Fraud Reason on `flagged`, never touches
+ * Category/Status, and only ever writes to the row being submitted — a
+ * same-month sibling found for pairing is read, never written to. */
+async function runDeductionCheck(
+  selectedRow: MasterRow,
+  draftSections: OcrSection[],
+  masterRows: MasterRow[],
+  accessToken: string | null,
+): Promise<DeductionCheckResult> {
+  if (baseDocType(selectedRow.documentType) !== 'payslip') return { status: 'not-applicable' }
+
+  const coverage = findField(draftSections, PAYSLIP_DEDUCTION_FIELDS.coveragePeriod)?.value.trim().toUpperCase() ?? ''
+  if (coverage !== 'S' && coverage !== 'M') return { status: 'skipped' }
+
+  const inputs = extractDeductionInputs(draftSections)
+  if (!inputs) return { status: 'unavailable' }
+
+  if (coverage === 'M') {
+    const outcome = checkMonthly(inputs)
+    return outcome.flagged ? { status: 'flagged', reasons: outcome.reasons } : { status: 'pass' }
+  }
+
+  // Coverage "S" (semi-monthly). Per explicit direction: the first payslip
+  // in a transaction (payslip_0) never triggers a pairing lookup — it goes
+  // through review with no deduction check attempted at all, avoiding any
+  // wait on a sibling that may not exist yet. A later payslip (payslip_1,
+  // payslip_2, …) looks for a same-month sibling — in practice payslip_0,
+  // already reviewed and submitted by normal queue order — falling back to
+  // the unpaired formula if none is found.
+  const docIndex = parsePayslipDocumentIndex(selectedRow.documentType)
+  if (docIndex === null || docIndex === 0) return { status: 'not-applicable' }
+
+  const myStart = findField(draftSections, PAYSLIP_DATE_FIELDS.start)?.value
+  const myStartDate = myStart ? parseDdMmYyyy(myStart) : null
+
+  if (myStartDate && accessToken) {
+    const siblings = masterRows.filter(
+      (r) =>
+        r.transactionId === selectedRow.transactionId &&
+        baseDocType(r.documentType) === 'payslip' &&
+        masterRowKey(r) !== masterRowKey(selectedRow),
+    )
+    for (const sibling of siblings) {
+      const siblingDoc = await fetchSiblingOcrDocument(sibling, accessToken)
+      if (!siblingDoc) continue
+
+      const siblingCoverage = findField(siblingDoc.sections, PAYSLIP_DEDUCTION_FIELDS.coveragePeriod)?.value.trim().toUpperCase()
+      if (siblingCoverage !== 'S') continue
+
+      const siblingStart = findField(siblingDoc.sections, PAYSLIP_DATE_FIELDS.start)?.value
+      const siblingStartDate = siblingStart ? parseDdMmYyyy(siblingStart) : null
+      if (!siblingStartDate || !isSameMonthYear(myStartDate, siblingStartDate)) continue
+
+      const siblingInputs = extractDeductionInputs(siblingDoc.sections)
+      if (!siblingInputs) continue
+
+      const outcome = checkPairedSemiMonthly(inputs, siblingInputs)
+      return outcome.flagged ? { status: 'flagged', reasons: outcome.reasons } : { status: 'pass' }
+    }
+  }
+
+  const outcome = checkUnpairedSemiMonthly(inputs)
+  return outcome.flagged ? { status: 'flagged', reasons: outcome.reasons } : { status: 'pass' }
+}
 
 export function usePortal() {
   const [user, setUser] = useState<AuthedUser | null>(DEMO_MODE ? { accessToken: 'demo', expiresAt: Infinity, name: 'Juan Dela Cruz', email: 'demo@hyperverge.co' } : getStoredUser())
@@ -363,19 +505,10 @@ export function usePortal() {
     setLoadingDoc(true)
     ;(async () => {
       try {
-        const parsedUrl = parseSheetUrlHref(selectedRow.sheetUrl.href)
-        if (!parsedUrl) throw new Error('Could not resolve the OCR sheet link for this row — see README known gaps.')
-        const quotedTab = `'${selectedRow.documentType.replace(/'/g, "''")}'`
-        // getGridData, not the lighter getValues — needed for per-cell
-        // dataValidation so a field like Company Category can offer live
-        // suggestions (see attachFieldValidation). OCR tabs are small
-        // (a few dozen rows), so this doesn't carry the cost that made
-        // the master sheet's row list switch away from it.
-        const grid = await getGridData(parsedUrl.spreadsheetId, `${quotedTab}!A1:D500`, user.accessToken, { signal: controller.signal })
+        const fetched = await fetchOcrDocument(selectedRow, user.accessToken, controller.signal)
         if (cancelled) return
-        const rows = grid.map((row) => row.map((cell) => cell?.formattedValue ?? ''))
-        const parsedDoc = parseOcrRows(rows)
-        const doc: OcrDocument = { rowKey, spreadsheetId: parsedUrl.spreadsheetId, tabTitle: selectedRow.documentType, gid: parsedUrl.gid, ...parsedDoc }
+        if (!fetched) throw new Error('Could not resolve the OCR sheet link for this row — see README known gaps.')
+        const { doc, grid } = fetched
         // Render the fields NOW, without waiting on attachFieldValidation
         // below — every field already has its real value at this point;
         // all that's still missing is which ONE of them (Company
@@ -388,7 +521,7 @@ export function usePortal() {
         setDraftSections(structuredClone(doc.sections))
         setLoadingDoc(false)
 
-        attachFieldValidation(doc.sections, grid, parsedUrl.spreadsheetId, user.accessToken)
+        attachFieldValidation(doc.sections, grid, doc.spreadsheetId, user.accessToken)
           .then((sections) => {
             if (cancelled) return
             // Patch validationOptions into whichever field each came from
@@ -816,12 +949,46 @@ export function usePortal() {
       setSyncMessage('Still loading this document — try Submit again in a moment.')
       return
     }
+
+    // --- Deduction-consistency check (Payslip only), BEFORE anything is
+    // written to the sheet — see deductionCheck.ts for the formulas/
+    // pairing rules this ports from the government-deduction Apps Script,
+    // and its own module comment for the explicit scope decisions
+    // (payslip_0 never pairs, only the row being submitted ever gets
+    // written to). Purely informational, per explicit direction: it only
+    // ever adds a Fraud Reason, never blocks the submit and never touches
+    // Category/Status. Runs with its own brief 'checking' sync-state phase
+    // so the reviewer sees it happening (and its outcome) rather than the
+    // button just sitting there for an extra beat before 'saving'.
+    let fraudReason = decisionDraft.fraudReason
+    if (draftSections) {
+      setSyncState('checking')
+      setSyncMessage('Checking deduction consistency…')
+      try {
+        const deductionResult = await runDeductionCheck(selectedRow, draftSections, masterRows, user?.accessToken ?? null)
+        if (deductionResult.status === 'flagged') {
+          const matched = findFraudReasonMatch(taxonomy.fraudReasons, DEDUCTION_INCONSISTENT_CANDIDATES) ?? DEDUCTION_INCONSISTENT_FALLBACK
+          if (!fraudReason.includes(matched)) fraudReason = [...fraudReason, matched]
+          setSyncMessage(`Flagged — ${matched}`)
+          await sleep(DEDUCTION_CHECK_PAUSE_MS)
+        } else if (deductionResult.status === 'pass') {
+          setSyncMessage('Passed — deductions look consistent')
+          await sleep(DEDUCTION_CHECK_PAUSE_MS)
+        }
+        // not-applicable / skipped / unavailable: nothing worth a pause for — straight to saving.
+      } catch {
+        // A check that fails to run (e.g. a sibling fetch error that
+        // somehow escaped fetchSiblingOcrDocument's own try/catch) must
+        // never block the actual submit — just proceed without a flag.
+      }
+    }
+
     const category: CategoryValue = decisionDraft.category
     const decision = {
       category,
       rejectionReason: decisionDraft.rejectionReason,
       status: decisionDraft.status,
-      fraudReason: decisionDraft.fraudReason,
+      fraudReason,
       reclassified: decisionDraft.reclassified,
       flags: decisionDraft.flags,
     }
@@ -862,7 +1029,7 @@ export function usePortal() {
       setSyncState('error')
       setSyncMessage(err instanceof Error ? err.message : 'Save failed')
     }
-  }, [selectedRow, decisionDraft, filters.date, currentDoc, draftSections, filteredRows, user, loadingDoc])
+  }, [selectedRow, decisionDraft, filters.date, currentDoc, draftSections, filteredRows, masterRows, taxonomy, user, loadingDoc])
 
   return {
     demoMode: DEMO_MODE,
